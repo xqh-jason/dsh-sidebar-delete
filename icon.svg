@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Sidebar Delete">
+  <rect x="1" y="1" width="22" height="22" rx="5" fill="#f4f5f7" stroke="#d5d8dd" stroke-width="1"/>
+  <g fill="none" stroke="#5b616e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7.2 7.6h9.6"/>
+    <path d="M9.4 7.6V6.2a1.1 1.1 0 0 1 1.1-1.1h3a1.1 1.1 0 0 1 1.1 1.1v1.4"/>
+    <path d="M8.2 7.6l.7 9.5a1.4 1.4 0 0 0 1.4 1.3h3.4a1.4 1.4 0 0 0 1.4-1.3l.7-9.5"/>
+  </g>
+  <path d="M9.9 12.4h4.2" fill="none" stroke="#e5484d" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

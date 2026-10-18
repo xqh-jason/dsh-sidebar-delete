@@ -1,0 +1,67 @@
+{
+  "name": "dsh-sidebar-delete",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Delete sessions (logs included) and manage/delete workspaces from the DeepSeek Harness sidebar. · 在 dsh 侧栏删除会话（含本地日志）并管理工作区。",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "xqh-jason",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js && node --check src/session-store.mjs && node --check src/http-fence.mjs",
+    "test": "node --test test/*.test.mjs",
+    "pack:check": "npm pack --dry-run",
+    "verify": "npm run check && npm test && npm run pack:check"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "sidebar",
+    "session",
+    "workspace",
+    "delete"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xqh-jason/dsh-sidebar-delete.git"
+  },
+  "homepage": "https://github.com/xqh-jason/dsh-sidebar-delete#readme",
+  "bugs": {
+    "url": "https://github.com/xqh-jason/dsh-sidebar-delete/issues"
+  }
+}
