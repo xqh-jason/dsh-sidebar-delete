@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Sidebar Delete",
-    "description": "Delete sessions (local logs included, irreversible) from the sidebar, plus a management entry for workspaces and ungrouped sessions."
+    "description": "Delete sessions from the dsh sidebar — local logs and projection cache included, irreversible, child sessions cascade — and manage workspaces: a persistent entry, per-row delete, and one-click registration of ungrouped folders."
   },
   "menu.session": "Delete session",
   "rowAction.delete": "Delete session",

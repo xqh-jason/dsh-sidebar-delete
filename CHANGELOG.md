@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.4] - 2026-10-18
+
+首个可以发到 npm 的版本（此前 `private: true` 会让 npm 直接拒发）。
+
+### 变更
+
+- **打包**：去掉 `private`；加 `publishConfig`（`registry.npmjs.org` + `access: public`），避免误发到镜像；`prepublishOnly` 接 `npm run verify`，发布前强制跑语法检查、67 个单测与打包清单核对。
+- **自我检查补漏**：`check` 脚本补上 `src/delete-session.mjs`——0.1.1 新增的模块此前不在检查范围里。
+- **对外元数据**：包 `description` 与 `keywords` 按第三方插件写法重写；locale 的 `meta.title` / `meta.description`（插件列表里显示的就是这两项）中英各写一版，说明不可恢复与工作区能力。
+- **README** 重写为对外文档：徽章、安装三条路径（Desktop 插件页 / CLI / 本地目录）、用法、删除语义、安全边界与已知弱点、兼容性、已知限制、卸载、开发与发布。
+
 ## [0.1.3] - 2026-10-18
 
 ### 修复
