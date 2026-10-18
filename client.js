@@ -69,7 +69,14 @@ window.__ModuleLoader__.load({
       'manager.emptyWorkspaces': 'No workspace registered yet.',
       'manager.pending': 'Working…',
       'manager.noCwd': 'This session records no directory, so it cannot be registered.',
-      'manager.archivedHidden': 'Archived sessions and child sessions are not listed here.',
+      'manager.archivedHidden': 'Archived sessions are not listed here; subagent sessions appear under their parent.',
+      'manager.untitled': 'Untitled session',
+      'manager.subagent': 'Subagent',
+      'manager.running': 'Running',
+      'manager.current': 'Open now',
+      'manager.blank': 'Blank',
+      'manager.childCount': 'includes {n} child session(s)',
+      'manager.rowMeta': '{id} · {time}',
     }
 
     /** Simplified Chinese dictionary (mirrors `locale/zh.json` minus `meta`). */
@@ -104,7 +111,14 @@ window.__ModuleLoader__.load({
       'manager.emptyWorkspaces': '还没有登记的工作区。',
       'manager.pending': '处理中…',
       'manager.noCwd': '该会话没有目录记录，无法注册为工作区。',
-      'manager.archivedHidden': '已归档与子会话不在这个列表里显示。',
+      'manager.archivedHidden': '已归档的会话不在这里显示；子代理会话会挂在它的父会话下面。',
+      'manager.untitled': '未命名会话',
+      'manager.subagent': '子代理',
+      'manager.running': '运行中',
+      'manager.current': '当前打开',
+      'manager.blank': '空会话',
+      'manager.childCount': '含 {n} 条子会话',
+      'manager.rowMeta': '{id} · {time}',
     }
 
     /** Theme-token-only sheet; every class is prefixed `dshsd-`. */
@@ -156,9 +170,16 @@ window.__ModuleLoader__.load({
 .dshsd-group-action{flex:none;margin-left:auto}
 .dshsd-group-action + .dshsd-group-count{margin-left:0}
 .dshsd-sessions{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none}
-.dshsd-session-row{display:flex;align-items:center;gap:8px;padding:3px 4px 3px 10px;border-radius:var(--dsw-radius-xs)}
+.dshsd-session-row{display:flex;align-items:flex-start;gap:8px;padding:4px 4px 4px 10px;border-radius:var(--dsw-radius-xs)}
 .dshsd-session-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dshsd-session-title{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-primary)}
+.dshsd-session-main{display:flex;flex-direction:column;gap:1px;flex:1 1 auto;min-width:0}
+.dshsd-session-line{display:flex;align-items:center;gap:6px;min-width:0}
+.dshsd-session-title{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-primary)}
+.dshsd-session-cascade{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.dshsd-badges{display:inline-flex;align-items:center;gap:4px;flex:none}
+.dshsd-badge{padding:0 6px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;white-space:nowrap;background:var(--dsw-alias-interactive-bg-hover);border-radius:var(--dsw-radius-xs)}
+.dshsd-session-meta{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.3}
+.dshsd-session-delete{flex:none;margin-top:2px}
 .dshsd-empty{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px}
 .dshsd-confirm-box{display:flex;flex-direction:column;gap:8px;padding:8px;background:var(--dsw-alias-interactive-bg-hover-danger);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm)}
 `
@@ -562,31 +583,138 @@ window.__ModuleLoader__.load({
       return ref
     }
 
+    /** How much of a Session id the meta line shows. */
+    const META_ID_LENGTH = 8
+
+    /** The meta line's indent, and the extra indent one nesting level adds. */
+    const SESSION_INDENT_BASE = 10
+    const SESSION_INDENT_STEP = 14
+
     /**
-     * A session row inside the manager: title, an optional hover hint, and
-     * the delete action that raises the shared confirmation dialog.
+     * `MM-DD HH:mm` in the reader's own zone.
+     *
+     * @param value - epoch milliseconds.
+     * @returns the formatted time, or `''` when the value is not a date.
+     */
+    function formatUpdatedAt(value) {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return ''
+      const pad = (part) => String(part).padStart(2, '0')
+      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+    }
+
+    /** Leading token of the main Session id shape (`session-<uuid>`). */
+    const SESSION_ID_TOKEN = 'session-'
+
+    /**
+     * The distinctive head of a Session id: one leading `session-` is dropped
+     * before the first {@link META_ID_LENGTH} characters are taken, so
+     * `session-95fcd792-…` and the bare `95fcd792-…` both read `95fcd792`.
+     *
+     * Without that, every id of the main shape would render the same constant
+     * `session-`, which is exactly the ambiguity this line exists to remove.
+     * Both id shapes are handled; no shape is required.
+     *
+     * @param value - a Session id.
+     * @returns the short id for display.
+     */
+    function shortSessionId(value) {
+      const id = typeof value === 'string' ? value : ''
+      const body = id.startsWith(SESSION_ID_TOKEN) && id.length > SESSION_ID_TOKEN.length ? id.slice(SESSION_ID_TOKEN.length) : id
+      return body.slice(0, META_ID_LENGTH)
+    }
+
+    /**
+     * The row's second line: the short id, and the last-update time when the
+     * snapshot carries one. A missing/zero `updatedAt` (the controller stamps
+     * `0` on subagent rows it synthesizes) shows the id alone rather than a
+     * 1970 timestamp.
      *
      * @param row - one Session row.
+     * @param t - locale seat.
+     * @returns the meta text.
+     */
+    function rowMeta(row, t) {
+      const id = shortSessionId(row.id)
+      const updatedAt = typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) && row.updatedAt > 0 ? row.updatedAt : 0
+      if (updatedAt === 0) return id
+      const time = formatUpdatedAt(updatedAt)
+      if (time === '') return id
+      return t('manager.rowMeta', { id, time })
+    }
+
+    /**
+     * The state badges of one row, in display order.
+     *
+     * @param row - one Session row.
+     * @param t - locale seat.
+     * @returns the badge labels.
+     */
+    function rowBadges(row, t) {
+      const badges = []
+      if (isSessionRetained(row)) badges.push(t('manager.current'))
+      if (row.running === true) badges.push(t('manager.running'))
+      if (row.origin === 'subagent') badges.push(t('manager.subagent'))
+      if (row.blank === true) badges.push(t('manager.blank'))
+      return badges
+    }
+
+    /**
+     * A session row inside the manager: two lines (title plus state badges,
+     * then the short id and last-update time), indented by nesting depth, and
+     * the delete action that raises the shared confirmation dialog.
+     *
+     * The title is the persisted `title`; `displayTitle` is deliberately not
+     * used here, because the controller derives it from the cwd's directory
+     * name, which is already the group heading.
+     *
+     * @param node - `{row, depth, descendants}` from {@link flattenForest}.
      * @param options - `{t, requestDelete, hint}`.
      * @returns the list item.
      */
-    function sessionRow(row, options) {
+    function sessionRow(node, options) {
       const { t, requestDelete, hint } = options
-      const title = typeof row.displayTitle === 'string' && row.displayTitle !== '' ? row.displayTitle : row.id
+      const row = node.row
+      const title = typeof row.title === 'string' && row.title !== '' ? row.title : t('manager.untitled')
+      const badges = rowBadges(row, t)
       const tooltip = typeof hint === 'string' && hint !== '' ? `${title} — ${hint}` : title
-      const displayTitle = typeof row.displayTitle === 'string' ? row.displayTitle : ''
+      const label = t('rowAction.delete')
       return h(
         'li',
-        { className: 'dshsd-session-row', key: row.id },
-        h('span', { className: 'dshsd-session-title', title: tooltip }, title),
+        {
+          className: 'dshsd-session-row',
+          key: row.id,
+          style: { paddingLeft: `${SESSION_INDENT_BASE + node.depth * SESSION_INDENT_STEP}px` },
+          title: tooltip,
+        },
+        h(
+          'div',
+          { className: 'dshsd-session-main' },
+          h(
+            'div',
+            { className: 'dshsd-session-line' },
+            h('span', { className: 'dshsd-session-title' }, title),
+            badges.length === 0
+              ? null
+              : h(
+                  'span',
+                  { className: 'dshsd-badges' },
+                  badges.map((text, index) => h('span', { className: 'dshsd-badge', key: `${row.id}:${String(index)}` }, text)),
+                ),
+            node.descendants > 0
+              ? h('span', { className: 'dshsd-session-cascade' }, t('manager.childCount', { n: node.descendants }))
+              : null,
+          ),
+          h('div', { className: 'dshsd-session-meta' }, rowMeta(row, t)),
+        ),
         h(
           'button',
           {
             type: 'button',
-            className: 'dshsd-icon-button',
-            'aria-label': t('rowAction.delete'),
-            title: t('rowAction.delete'),
-            onClick: () => requestDelete(row.id, displayTitle),
+            className: 'dshsd-icon-button dshsd-session-delete',
+            'aria-label': label,
+            title: label,
+            onClick: () => requestDelete(row.id, typeof row.title === 'string' ? row.title : ''),
           },
           iconTrash(14),
         ),
@@ -594,26 +722,191 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * @param rows - the Session rows of one group.
+     * @param nodes - the `{row, depth, descendants}` nodes of one group.
      * @param options - `{t, requestDelete, hint}`.
      * @returns the list, or the empty note.
      */
-    function sessionList(rows, options) {
-      if (rows.length === 0) return h('p', { className: 'dshsd-empty' }, options.t('manager.empty'))
-      return h('ul', { className: 'dshsd-sessions' }, rows.map((row) => sessionRow(row, options)))
+    function sessionList(nodes, options) {
+      if (nodes.length === 0) return h('p', { className: 'dshsd-empty' }, options.t('manager.empty'))
+      return h('ul', { className: 'dshsd-sessions' }, nodes.map((node) => sessionRow(node, options)))
+    }
+
+    /**
+     * Every `byId` row in display order: the list's own order first, then the
+     * rows the controller holds only in `byId` (it synthesizes subagent rows
+     * there without adding them to `ids`, so iterating `ids` alone would hide
+     * exactly the sessions this panel exists to make visible).
+     *
+     * @param byId - the Session index.
+     * @param ids - the list's ordered ids.
+     * @returns the ordered row ids.
+     */
+    function rowOrder(byId, ids) {
+      const order = []
+      const seen = new Set()
+      for (const id of ids) {
+        if (byId[id] === undefined || seen.has(id)) continue
+        seen.add(id)
+        order.push(id)
+      }
+      for (const id of Object.keys(byId)) {
+        if (seen.has(id)) continue
+        seen.add(id)
+        order.push(id)
+      }
+      return order
+    }
+
+    /**
+     * Build one scope's parent/child forest. A row is a root when its
+     * `parentId` is missing or points outside this scope's listed rows — a
+     * parent in another section, an archived one, or a deleted one — so an
+     * orphan child surfaces with its own badge instead of vanishing.
+     *
+     * A parent cycle leaves rows unreachable from every root; the rescue pass
+     * adopts them as roots so no listed row can be dropped.
+     *
+     * @param scopeIds - the ids of this scope, in display order.
+     * @param byId - the Session index.
+     * @param archived - ids hidden everywhere.
+     * @returns the roots, each `{row, depth, children, size}`.
+     */
+    function buildForest(scopeIds, byId, archived) {
+      const listed = []
+      const listedIds = new Set()
+      for (const id of scopeIds) {
+        const row = byId[id]
+        if (row === null || row === undefined || typeof row.id !== 'string' || listedIds.has(row.id) || archived.has(row.id)) continue
+        listedIds.add(row.id)
+        listed.push(row)
+      }
+      const childrenOf = new Map()
+      const roots = []
+      for (const row of listed) {
+        const parentId = typeof row.parentId === 'string' && row.parentId !== '' ? row.parentId : undefined
+        if (parentId !== undefined && parentId !== row.id && listedIds.has(parentId)) {
+          const bucket = childrenOf.get(parentId)
+          if (bucket === undefined) childrenOf.set(parentId, [row])
+          else bucket.push(row)
+        } else {
+          roots.push(row)
+        }
+      }
+      const attached = new Set()
+      const build = (row, depth, trail) => {
+        attached.add(row.id)
+        const children = []
+        for (const child of childrenOf.get(row.id) ?? []) {
+          if (trail.has(child.id)) continue
+          children.push(build(child, depth + 1, new Set([...trail, child.id])))
+        }
+        let size = children.length
+        for (const child of children) size += child.size
+        return { row, depth, children, size }
+      }
+      const trees = roots.map((row) => build(row, 0, new Set([row.id])))
+      for (const row of listed) {
+        if (attached.has(row.id)) continue
+        trees.push(build(row, 0, new Set([row.id])))
+      }
+      return trees
+    }
+
+    /**
+     * @param trees - a forest from {@link buildForest}.
+     * @returns the rows in depth-first order, each with its depth and the
+     *   number of rows nested under it.
+     */
+    function flattenForest(trees) {
+      const nodes = []
+      const walk = (node) => {
+        nodes.push({ row: node.row, depth: node.depth, descendants: node.size })
+        for (const child of node.children) walk(child)
+      }
+      for (const tree of trees) walk(tree)
+      return nodes
+    }
+
+    /**
+     * Index every row's children by `parentId`, across origins (a fork child
+     * and a subagent child are the same edge to the Host's deletion cascade).
+     *
+     * @param order - the rows to index, in display order.
+     * @param byId - the Session index.
+     * @returns `parentId -> rows`.
+     */
+    function childrenIndex(order, byId) {
+      const childrenOf = new Map()
+      for (const id of order) {
+        const row = byId[id]
+        if (row === null || row === undefined) continue
+        const parentId = typeof row.parentId === 'string' && row.parentId !== '' ? row.parentId : undefined
+        if (parentId === undefined || parentId === row.id) continue
+        const bucket = childrenOf.get(parentId)
+        if (bucket === undefined) childrenOf.set(parentId, [row])
+        else bucket.push(row)
+      }
+      return childrenOf
+    }
+
+    /**
+     * Collect one Workspace's scope: the rows it lists plus every descendant
+     * of those rows, transitively — crossing `origin`, and skipping rows
+     * another section already claimed or that are archived. Claiming
+     * descendants here is what keeps a Workspace's subagent/fork children in
+     * its own section instead of dropping them into "Ungrouped".
+     *
+     * @param members - the Workspace's own member ids, in its order.
+     * @param byId - the Session index.
+     * @param order - every row id in display order.
+     * @param childrenOf - the {@link childrenIndex} of `order`.
+     * @param archived - ids hidden everywhere.
+     * @param claimed - ids already owned by an earlier section; extended here.
+     * @returns the scope's ids: members first, then discovered descendants.
+     */
+    function workspaceScope(members, byId, order, childrenOf, archived, claimed) {
+      const scope = new Set()
+      const queue = []
+      const admit = (id) => {
+        if (scope.has(id) || claimed.has(id) || archived.has(id) || byId[id] === undefined) return false
+        scope.add(id)
+        queue.push(id)
+        return true
+      }
+      for (const id of members) admit(id)
+      for (let index = 0; index < queue.length; index += 1) {
+        for (const child of childrenOf.get(queue[index]) ?? []) admit(child.id)
+      }
+      const scoped = []
+      const seen = new Set()
+      for (const id of members) {
+        if (!scope.has(id) || seen.has(id)) continue
+        seen.add(id)
+        scoped.push(id)
+      }
+      for (const id of order) {
+        if (!scope.has(id) || seen.has(id)) continue
+        seen.add(id)
+        scoped.push(id)
+      }
+      for (const id of scoped) claimed.add(id)
+      return scoped
     }
 
     /**
      * Project the two snapshots into what the panel lists: the registered
-     * Workspaces with their listed Sessions, and the ungrouped Sessions
-     * grouped by recorded directory.
+     * Workspaces with their Sessions, and the ungrouped Sessions grouped by
+     * recorded directory. Every Session row of `byId` is placed exactly once,
+     * subagent rows included; only archived rows are hidden
+     * (`manager.archivedHidden` says so on screen).
      *
-     * A Session is listed only when it is stored, is not a subagent child and
-     * is not archived (`manager.archivedHidden` says so on screen).
+     * Sections claim in order: each Workspace takes its members and their
+     * descendants, and whatever is left — including a subagent whose parent
+     * is not listed anywhere — lands in "Ungrouped", so no row can vanish.
      *
      * @param workspaces - the Workspace snapshot.
      * @param sessions - the Session snapshot.
-     * @returns `{workspaces: [{item, sessions}], groups: [{path, sessions}]}`.
+     * @returns `{workspaces: [{item, nodes}], groups: [{path, nodes}]}`.
      */
     function buildManagerModel(workspaces, sessions) {
       const items = workspaces !== null && workspaces !== undefined && Array.isArray(workspaces.items) ? workspaces.items : []
@@ -621,29 +914,28 @@ window.__ModuleLoader__.load({
       const archived = new Set(archivedIds)
       const byId = sessions !== null && sessions !== undefined && sessions.byId !== null && sessions.byId !== undefined ? sessions.byId : {}
       const ids = sessions !== null && sessions !== undefined && Array.isArray(sessions.ids) ? sessions.ids : Object.keys(byId)
-      const listable = (row) =>
-        row !== null && row !== undefined && row.origin !== 'subagent' && !archived.has(row.id)
+      const order = rowOrder(byId, ids)
+      const childrenOf = childrenIndex(order, byId)
       const claimed = new Set()
       const workspaceEntries = items.map((item) => {
-        const sessionIds = Array.isArray(item.sessionIds) ? item.sessionIds : []
-        for (const id of sessionIds) claimed.add(id)
-        return { item, sessions: sessionIds.map((id) => byId[id]).filter(listable) }
+        const members = Array.isArray(item.sessionIds) ? item.sessionIds : []
+        const scoped = workspaceScope(members, byId, order, childrenOf, archived, claimed)
+        return { item, nodes: flattenForest(buildForest(scoped, byId, archived)) }
       })
       const groups = []
       const byPath = new Map()
-      for (const id of ids) {
-        const row = byId[id]
-        if (row === null || row === undefined || claimed.has(row.id) || !listable(row)) continue
-        const path = typeof row.cwd === 'string' && row.cwd !== '' ? row.cwd : null
+      for (const tree of buildForest(order.filter((id) => !claimed.has(id)), byId, archived)) {
+        const path = typeof tree.row.cwd === 'string' && tree.row.cwd !== '' ? tree.row.cwd : null
         const key = path === null ? '\u0000none' : path
         let group = byPath.get(key)
         if (group === undefined) {
-          group = { path, sessions: [] }
+          group = { path, trees: [] }
           byPath.set(key, group)
           groups.push(group)
         }
-        group.sessions.push(row)
+        group.trees.push(tree)
       }
+      for (const group of groups) group.nodes = flattenForest(group.trees)
       groups.sort((left, right) => {
         if (left.path === null) return 1
         if (right.path === null) return -1
@@ -782,7 +1074,7 @@ window.__ModuleLoader__.load({
                 t('manager.deleteWorkspace'),
               )
             : null,
-          h('span', { className: 'dshsd-group-count' }, t('manager.sessions', { n: entry.sessions.length })),
+          h('span', { className: 'dshsd-group-count' }, t('manager.sessions', { n: entry.nodes.length })),
         ),
         confirming
           ? h(
@@ -812,7 +1104,7 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
-        sessionList(entry.sessions, { t, requestDelete }),
+        sessionList(entry.nodes, { t, requestDelete }),
       )
     }
 
@@ -992,12 +1284,12 @@ window.__ModuleLoader__.load({
                             busy ? t('manager.register.pending') : t('manager.register'),
                           )
                         : null,
-                      h('span', { className: 'dshsd-group-count' }, t('manager.sessions', { n: group.sessions.length })),
+                      h('span', { className: 'dshsd-group-count' }, t('manager.sessions', { n: group.nodes.length })),
                     ),
                     failure !== null
                       ? h('p', { className: 'dshsd-error', role: 'alert' }, failureText(failure, t, 'manager.register.failed'))
                       : null,
-                    sessionList(group.sessions, {
+                    sessionList(group.nodes, {
                       t,
                       requestDelete: actions.requestDelete,
                       hint: path === null ? t('manager.noCwd') : null,

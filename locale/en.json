@@ -33,5 +33,12 @@
   "manager.emptyWorkspaces": "No workspace registered yet.",
   "manager.pending": "Working…",
   "manager.noCwd": "This session records no directory, so it cannot be registered.",
-  "manager.archivedHidden": "Archived sessions and child sessions are not listed here."
+  "manager.archivedHidden": "Archived sessions are not listed here; subagent sessions appear under their parent.",
+  "manager.untitled": "Untitled session",
+  "manager.subagent": "Subagent",
+  "manager.running": "Running",
+  "manager.current": "Open now",
+  "manager.blank": "Blank",
+  "manager.childCount": "includes {n} child session(s)",
+  "manager.rowMeta": "{id} · {time}"
 }

@@ -33,5 +33,12 @@
   "manager.emptyWorkspaces": "还没有登记的工作区。",
   "manager.pending": "处理中…",
   "manager.noCwd": "该会话没有目录记录，无法注册为工作区。",
-  "manager.archivedHidden": "已归档与子会话不在这个列表里显示。"
+  "manager.archivedHidden": "已归档的会话不在这里显示；子代理会话会挂在它的父会话下面。",
+  "manager.untitled": "未命名会话",
+  "manager.subagent": "子代理",
+  "manager.running": "运行中",
+  "manager.current": "当前打开",
+  "manager.blank": "空会话",
+  "manager.childCount": "含 {n} 条子会话",
+  "manager.rowMeta": "{id} · {time}"
 }
