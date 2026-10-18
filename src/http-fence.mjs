@@ -105,17 +105,36 @@ export function sameOrigin(origin, host) {
 }
 
 /**
- * Decide whether a request may reach the delete handler.
+ * Decide whether the request's method and media type are acceptable, before
+ * anything about the caller is considered.
+ *
+ * @param request - incoming request.
+ * @returns an admission verdict; `{ ok: false }` carries the status to answer.
+ */
+export function methodVerdict(request) {
+  const method = String(request?.method ?? 'GET').toUpperCase()
+  if (method !== 'POST') {
+    return { ok: false, status: 405, code: 'method-not-allowed', message: 'only POST is accepted' }
+  }
+  const contentType = headerOf(request, 'content-type')
+  if (contentType === undefined || !contentType.toLowerCase().includes('application/json')) {
+    return { ok: false, status: 415, code: 'unsupported-media-type', message: 'content-type must be application/json' }
+  }
+  return { ok: true }
+}
+
+/**
+ * Decide whether this plugin trusts the request's authority and origin.
+ *
+ * The fallback used when the host publishes no connection gate. It answers the
+ * two questions such a gate answers for a local carrier: the `Host` is loopback
+ * or an authority the deployment declared, and a present `Origin` matches it.
  *
  * @param request - incoming request.
  * @param options - declared authorities (from the host `connection` service).
  * @returns an admission verdict; `{ ok: false }` carries the status to answer.
  */
-export function fenceVerdict(request, options = {}) {
-  const method = String(request?.method ?? 'GET').toUpperCase()
-  if (method !== 'POST') {
-    return { ok: false, status: 405, code: 'method-not-allowed', message: 'only POST is accepted' }
-  }
+export function authorityVerdict(request, options = {}) {
   const host = headerOf(request, 'host')
   if (!isLoopbackAuthority(host) && !isTrustedAuthority(host, options.trustedHosts ?? [])) {
     return {
@@ -129,11 +148,53 @@ export function fenceVerdict(request, options = {}) {
   if (origin !== undefined && !sameOrigin(origin, host)) {
     return { ok: false, status: 403, code: 'untrusted-origin', message: 'the request Origin does not match its Host' }
   }
-  const contentType = headerOf(request, 'content-type')
-  if (contentType === undefined || !contentType.toLowerCase().includes('application/json')) {
-    return { ok: false, status: 415, code: 'unsupported-media-type', message: 'content-type must be application/json' }
-  }
   return { ok: true }
+}
+
+/**
+ * Decide whether a request may reach the delete handler using this plugin's own
+ * checks alone (method, media type, authority, origin).
+ *
+ * @param request - incoming request.
+ * @param options - declared authorities (from the host `connection` service).
+ * @returns an admission verdict; `{ ok: false }` carries the status to answer.
+ */
+export function fenceVerdict(request, options = {}) {
+  const method = methodVerdict(request)
+  if (!method.ok) return method
+  return authorityVerdict(request, options)
+}
+
+/**
+ * Ask the host's own connection gate, which applies the harness' Host/Origin
+ * checks *and* browser authentication to another route.
+ *
+ * Consulted only where the deployment accepts remote authorities. On the
+ * loopback-only Desktop carrier that gate's authentication half is unmeasured
+ * for this carrier (a shipped third-party plugin in the same profile documents
+ * the same gap), so there the plugin's own authority fence stays the floor;
+ * anything reachable by name gets the host's decision, login included.
+ *
+ * @param connection - the host `connection` service, when present.
+ * @param request - incoming request.
+ * @returns `{consulted:false}` when the gate is not applicable, otherwise the
+ *   gate's status (`401`/`403`) or `undefined` when it admits the request.
+ */
+export function hostGateVerdict(connection, request) {
+  if (connection === null || connection === undefined) return { consulted: false }
+  if (connection.allowsRemoteAuthorities !== true) return { consulted: false }
+  if (typeof connection.requestRejection !== 'function') return { consulted: false }
+  try {
+    const status = connection.requestRejection({ headers: request?.headers ?? {} })
+    if (status === undefined) return { consulted: true, status: undefined }
+    // The contract answers 401 | 403 | undefined; anything else is treated as a
+    // refusal rather than as an admission.
+    return { consulted: true, status: status === 401 ? 401 : 403 }
+  } catch {
+    // A gate that throws has admitted nothing; failing open would be the
+    // exposure this exists to close.
+    return { consulted: true, status: 403 }
+  }
 }
 
 /**

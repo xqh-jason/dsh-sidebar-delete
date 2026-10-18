@@ -9,10 +9,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  authorityVerdict,
   fenceVerdict,
   headerOf,
+  hostGateVerdict,
   isLoopbackAuthority,
   isTrustedAuthority,
+  methodVerdict,
   parseAuthority,
   readJsonBody,
 } from '../src/http-fence.mjs'
@@ -163,4 +166,55 @@ test('readJsonBody reports a body source that throws', async () => {
 
 test('isTrustedAuthority tolerates a missing list', () => {
   assert.equal(isTrustedAuthority('127.0.0.1:1', undefined), false)
+})
+
+test('methodVerdict splits the caller-independent checks from the authority checks', () => {
+  assert.deepEqual(methodVerdict(request('POST', { 'content-type': 'application/json' })), { ok: true })
+  assert.equal(methodVerdict(request('GET', { 'content-type': 'application/json' })).status, 405)
+  assert.equal(methodVerdict(request('POST', {})).status, 415)
+})
+
+test('authorityVerdict only judges host and origin', () => {
+  assert.deepEqual(authorityVerdict(request('POST', { host: LOOPBACK_HOST })), { ok: true })
+  assert.equal(authorityVerdict(request('POST', { host: 'evil.com' })).status, 403)
+  assert.equal(
+    authorityVerdict(request('POST', { host: LOOPBACK_HOST, origin: 'http://evil.com' })).status,
+    403,
+  )
+  // A declared authority is accepted when the deployment exposes the list.
+  assert.deepEqual(
+    authorityVerdict(request('POST', { host: 'dsh.example.org' }), { trustedHosts: ['dsh.example.org'] }),
+    { ok: true },
+  )
+})
+
+test('hostGateVerdict stays out of the way when the gate is not applicable', () => {
+  assert.deepEqual(hostGateVerdict(undefined, request('POST', {})), { consulted: false })
+  assert.deepEqual(hostGateVerdict({ allowsRemoteAuthorities: false }, request('POST', {})), { consulted: false })
+  assert.deepEqual(
+    hostGateVerdict({ allowsRemoteAuthorities: true }, request('POST', {})),
+    { consulted: false },
+    'a gate without requestRejection cannot decide',
+  )
+})
+
+test('hostGateVerdict carries the gate decision through', () => {
+  const admitted = { allowsRemoteAuthorities: true, requestRejection: () => undefined }
+  assert.deepEqual(hostGateVerdict(admitted, request('POST', {})), { consulted: true, status: undefined })
+  for (const status of [401, 403]) {
+    const refusing = { allowsRemoteAuthorities: true, requestRejection: () => status }
+    assert.deepEqual(hostGateVerdict(refusing, request('POST', {})), { consulted: true, status })
+  }
+})
+
+test('hostGateVerdict fails closed when the gate throws or answers nonsense', () => {
+  const throwing = {
+    allowsRemoteAuthorities: true,
+    requestRejection: () => {
+      throw new Error('broken')
+    },
+  }
+  assert.deepEqual(hostGateVerdict(throwing, request('POST', {})), { consulted: true, status: 403 })
+  const odd = { allowsRemoteAuthorities: true, requestRejection: () => 500 }
+  assert.deepEqual(hostGateVerdict(odd, request('POST', {})), { consulted: true, status: 403 })
 })

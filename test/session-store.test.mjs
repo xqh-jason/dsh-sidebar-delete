@@ -18,7 +18,6 @@ import {
   defaultStoragesRoot,
   findSessionDir,
   harnessHome,
-  hasDescendants,
   isSessionId,
   projectionCacheDir,
   removeSessionFiles,
@@ -63,12 +62,15 @@ async function fixture(ids) {
   return { base, sessionRoot, storagesRoot, projcacheDir }
 }
 
-test('isSessionId accepts harness ids and nothing else', () => {
+test('isSessionId accepts both live id shapes and refuses path-shaped values', () => {
+  // Both shapes exist in one installation: the Web client mints `session-<uuid>`
+  // and teammates / subagents / some client-created sessions get a bare uuid.
   assert.equal(isSessionId(ROOT_SESSION), true)
-  assert.equal(isSessionId('session-11111111-1111-4111-8111-11111111111'), false)
-  assert.equal(isSessionId('11111111-1111-4111-8111-111111111111'), false)
-  assert.equal(isSessionId('../etc/passwd'), false)
-  assert.equal(isSessionId(undefined), false)
+  assert.equal(isSessionId('11111111-1111-4111-8111-111111111111'), true)
+  assert.equal(isSessionId('session-7'), true)
+  for (const bad of ['../etc/passwd', 'a/b', 'a\\b', '..', '.hidden', '', 'x'.repeat(200), undefined, null, 42]) {
+    assert.equal(isSessionId(bad), false, `must refuse ${JSON.stringify(bad)}`)
+  }
 })
 
 test('roots resolve from DSH_HOME with a ~/.dsh fallback', () => {
@@ -93,8 +95,6 @@ test('collectSubtree walks parent links and ignores unrelated sessions', () => {
   ]
   assert.deepEqual(collectSubtree(snapshots, ROOT_SESSION), [ROOT_SESSION, CHILD, GRANDCHILD])
   assert.deepEqual(collectSubtree(snapshots, UNRELATED), [UNRELATED])
-  assert.equal(hasDescendants(snapshots, ROOT_SESSION), true)
-  assert.equal(hasDescendants(snapshots, UNRELATED), false)
   assert.deepEqual(collectSubtree(snapshots, 'session-99999999-9999-4999-8999-999999999999'), [])
   assert.deepEqual(collectSubtree(undefined, ROOT_SESSION), [])
 })

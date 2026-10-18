@@ -8,22 +8,27 @@
  *
  * The harness has no deletion API for sessions, so this route is deliberately
  * narrow: one exact path, JSON only, a 64 KiB cap, loopback-or-declared-host
- * admission, and a refusal whenever any session in the affected branch is still
- * live. It never touches attachments (content-addressed and shared) and never
- * writes another plugin's storage.
+ * admission (or the host's own connection gate where it applies), and a
+ * refusal whenever any session in the affected branch is still live. It never
+ * touches attachments (content-addressed and shared) and never writes another
+ * plugin's storage.
+ *
+ * The safety decision itself lives in `src/delete-session.mjs`; this file is
+ * wiring plus the two host facts it reads (where the logs are, which sessions
+ * are live).
  *
  * @module dsh-sidebar-delete
  */
 
+import { deleteSessionBranch } from './src/delete-session.mjs'
 import {
-  collectSubtree,
   defaultStoragesRoot,
   isSessionId,
   projectionCacheDir,
   removeSessionFiles,
   resolveSessionRoot,
 } from './src/session-store.mjs'
-import { fenceVerdict, readJsonBody } from './src/http-fence.mjs'
+import { authorityVerdict, hostGateVerdict, methodVerdict, readJsonBody } from './src/http-fence.mjs'
 
 /** Required Host service: the browser HTTP carrier this route registers on. */
 export const inject = ['webServer']
@@ -51,7 +56,9 @@ export function apply(ctx) {
         kind: 'exact',
         path: ROUTE_PATH,
         handler: (request, response) => {
-          void handleDeleteRequest(ctx, inFlight, request, response)
+          // Returning the promise keeps the handler awaitable (tests drive it
+          // directly); the web carrier ignores the return value.
+          return handleDeleteRequest(ctx, inFlight, request, response)
         },
       }),
     'sidebar-delete: session delete route',
@@ -59,7 +66,7 @@ export function apply(ctx) {
 }
 
 /**
- * Answer one request: fence, parse, delete, report.
+ * Answer one request: admit, parse, delete, report.
  *
  * @param ctx - host context.
  * @param inFlight - shared single-flight map.
@@ -67,9 +74,14 @@ export function apply(ctx) {
  * @param response - outgoing response.
  */
 async function handleDeleteRequest(ctx, inFlight, request, response) {
-  const verdict = fenceVerdict(request, { trustedHosts: trustedHostsOf(ctx) })
-  if (!verdict.ok) {
-    sendJson(response, verdict.status, { ok: false, code: verdict.code, message: verdict.message })
+  const method = methodVerdict(request)
+  if (!method.ok) {
+    sendJson(response, method.status, { ok: false, code: method.code, message: method.message })
+    return
+  }
+  const admission = admissionOf(ctx, request)
+  if (admission !== undefined) {
+    sendJson(response, admission.status, { ok: false, code: admission.code, message: admission.message })
     return
   }
   const body = await readJsonBody(request, MAX_BODY_BYTES)
@@ -82,7 +94,7 @@ async function handleDeleteRequest(ctx, inFlight, request, response) {
     sendJson(response, 400, {
       ok: false,
       code: 'bad-request',
-      message: 'sessionId must be a session id of the form "session-<uuid>"',
+      message: 'sessionId must be a session id ("session-<uuid>" or a bare uuid)',
     })
     return
   }
@@ -97,6 +109,30 @@ async function handleDeleteRequest(ctx, inFlight, request, response) {
 }
 
 /**
+ * Admit or refuse one request.
+ *
+ * The host's own connection gate decides whenever it is applicable (it also
+ * enforces browser login there); otherwise this plugin's own loopback and
+ * same-origin fence does.
+ *
+ * @param ctx - host context.
+ * @param request - incoming request.
+ * @returns undefined when admitted, or the refusal to answer.
+ */
+function admissionOf(ctx, request) {
+  const gate = hostGateVerdict(ctx.get('connection'), request)
+  if (gate.consulted) {
+    if (gate.status === undefined) return undefined
+    return gate.status === 401
+      ? { status: 401, code: 'unauthorized', message: 'the request is not authenticated' }
+      : { status: 403, code: 'untrusted-origin', message: 'the host connection gate refused this request' }
+  }
+  const authority = authorityVerdict(request, { trustedHosts: trustedHostsOf(ctx) })
+  if (authority.ok) return undefined
+  return { status: authority.status, code: authority.code, message: authority.message }
+}
+
+/**
  * Remove one session branch from local storage.
  *
  * @param ctx - host context.
@@ -105,47 +141,21 @@ async function handleDeleteRequest(ctx, inFlight, request, response) {
  */
 async function deleteSession(ctx, requestedId) {
   try {
-    const snapshots = await listSnapshots(ctx)
-    const subtree = collectSubtree(snapshots, requestedId)
-    // An unknown id still gets its directory removed: a session whose listing
-    // failed must not become undeletable.
-    const targets = subtree.length > 0 ? subtree : [requestedId]
-    const live = targets.filter((id) => isLive(ctx, id))
-    if (live.length > 0) {
-      return {
-        ok: false,
-        code: 'session-active',
-        message:
-          'this session (or one of its child sessions) is still running or open; stop it before deleting',
-        live,
-        deleted: [],
-      }
-    }
-    const sessionRoot = resolveSessionRoot({ configRoot: configuredSessionRoot(ctx) })
-    const projcache = projectionCacheDir(defaultStoragesRoot())
-    const outcome = await removeSessionFiles({ sessionRoot, projcacheDir: projcache, ids: targets })
-    const gone = [...outcome.removed, ...outcome.missing]
-    for (const id of gone) ctx.emit('api-session/removed', id)
-    if (outcome.failures.length > 0) {
-      log(ctx, 'warn', `sidebar-delete: ${requestedId} partially deleted`, outcome.failures)
-      return {
-        ok: false,
-        code: 'partial',
-        message: `${outcome.failures.length} file target(s) could not be removed`,
-        deleted: gone,
-        failures: outcome.failures,
-      }
-    }
-    log(ctx, 'info', `sidebar-delete: deleted ${gone.join(', ')}`)
-    return { ok: true, deleted: gone, sessionRoot }
+    const result = await deleteSessionBranch({
+      snapshots: await listSnapshots(ctx),
+      rootId: requestedId,
+      isLive: (id) => isLive(ctx, id),
+      sessionRoot: resolveSessionRoot({ configRoot: configuredSessionRoot(ctx) }),
+      projcacheDir: projectionCacheDir(defaultStoragesRoot()),
+      remove: removeSessionFiles,
+    })
+    for (const id of result.deleted) ctx.emit('api-session/removed', id)
+    if (result.ok) log(ctx, 'info', `sidebar-delete: deleted ${result.deleted.join(', ')}`)
+    else log(ctx, 'warn', `sidebar-delete: ${requestedId} not deleted (${result.code})`, result.failures ?? result.live)
+    return result
   } catch (error) {
     log(ctx, 'error', `sidebar-delete: deleting ${requestedId} failed`, error)
-    return {
-      ok: false,
-      code: 'internal',
-      message: String(error?.message ?? error),
-      deleted: [],
-    }
+    return { ok: false, code: 'internal', message: String(error?.message ?? error), deleted: [], failures: [] }
   }
 }
 
@@ -221,8 +231,12 @@ function rowName(row) {
 }
 
 /**
+ * The deployment's declared authorities, as the `connection` service exposes
+ * them. That list is not part of the published service contract, so an absent
+ * value simply narrows the fence to loopback.
+ *
  * @param ctx - host context.
- * @returns the deployment's declared authorities (empty when unavailable).
+ * @returns declared authorities (empty when unavailable).
  */
 function trustedHostsOf(ctx) {
   try {

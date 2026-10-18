@@ -19,11 +19,22 @@ dsh 自带的工作区删除入口藏在工作区分组标题的悬停菜单里�
 
 会**拒绝**删除并保持零改动的情况：会话正在运行、是当前打开的会话、或它的某个子会话还活着。删除**不可恢复**。
 
-## 安全边界
+## 安全边界（含已知弱点）
 
-- Host 半只发布一条路由 `POST /dsh-sidebar-delete/session`：只接受 `Host` 为 loopback 或部署已声明 authority 的请求，跨站 `Origin` 拒绝，`Origin` 缺失允许（Desktop 载体转发时会剥掉它），只收 `application/json`，body 上限 64 KiB。
-- 不碰别的插件的存储、不删附件、不往 `document.body` 写 DOM、不读别的插件的 DOM。
-- 刻意**不**给模型提供对应的 tool：删除本地会话日志是用户级、不可恢复的动作，只该由人在界面上确认。
+Host 半只发布一条路由 `POST /dsh-sidebar-delete/session`，准入顺序是：
+
+1. 仅接受 `POST` + `application/json`，body 上限 64 KiB（先判这些，再谈信任）。
+2. 如果宿主提供了 `connection.requestRejection` **且**该部署接受非 loopback authority（`allowsRemoteAuthorities === true`），就由宿主自己的门禁裁决——它同时做 Host/Origin 校验和浏览器登录校验；门禁返回什么就答什么，抛异常按拒绝处理。
+3. 否则退回本插件自己的围栏：`Host` 必须是 loopback（或在 `connection.trustedHosts` 里声明过——这个列表不在 `connection` 的服务契约里，读不到时等价于只允许 loopback），`Origin` 存在时必须与 `Host` 同源，缺失允许（Desktop 载体转发时会剥掉它）。
+
+**已知弱点，别当成完整围栏**：在 loopback-only 的 Desktop 部署上，这条路由**不校验宿主登录**——`requestRejection` 的浏览器认证那一半在 Desktop 载体上未被实测，贸然启用有可能把页面自己挡在门外（同 profile 的 `dshmarket` 记录了同样的空白）。因此在这一部署上，任何**本机进程**都能调用它；同 uid 的进程本来就能直接读写这些会话文件，所以对单用户机器不构成提权，但**多用户机器上这是真实弱点**。想要更严，可在支持 `authorizesRemoteAuthorities` 的部署上启用第 2 条，或把删除能力收进宿主自己的命令体系。
+
+另外：不碰别的插件的存储、不删附件、不往 `document.body` 写 DOM、不读别的插件的 DOM；刻意**不**给模型提供对应的 tool——删除本地会话日志是用户级、不可恢复的动作，只该由人在界面上确认。
+
+## 会话 id 的两种形状
+
+同一台机器上并存两种 id：Web 客户端建的 `session-<uuid>`，以及 teammate / 子会话 / 部分客户端建的**裸 uuid**（例如 `907e1e16-…`）。路由两样都接受（仍拒绝 `../etc/passwd`、`a/b` 这类会当路径用的值）。0.1.1 之前只认前者，导致裸 uuid 的会话在界面上点删除会失败——那是已修的缺陷。
+
 
 ## 安装
 
@@ -37,7 +48,15 @@ dsh 自带的工作区删除入口藏在工作区分组标题的悬停菜单里�
 
 在 dsh `0.2.1-rc.2`（`@deepseek-ai/dsh-client-ui-workspace@0.2.1-rc.2`）上开发与实测。它用到两件框架没有公开承诺的东西——会话日志的磁盘布局、以及 `api-session/removed` 事件（用来让侧栏即时摘行）——dsh 升级后可能失效。失效时只影响删除本身，不影响侧栏其它功能；升级后先跑一遍 `npm run verify`。
 
-另外，日志根目录会优先从已挂载的 `session-persistence-jsonl` 行配置里读，读不到才回退到 `$DSH_HOME/sessions`。
+日志根目录会优先从已挂载的 `session-persistence-jsonl` 行配置里读，读不到才回退到 `$DSH_HOME/sessions`。
+
+其余已知残留（都在真实使用中观察到了，不是理论问题）：
+
+- 删掉的会话 id 会留在 `workspace.json` 里（`archivedSessionIds` / 工作区 `sessionIds`），因为宿主没有"注销单条会话"的 API。悬空 id 不参与渲染（衍生行要求有 summary），但会长期堆着。实测一次真实清理后，8 条已归档里有 7 条悬空。
+- 会话自己的目录会被删，但它所在的项目目录（`--<cwd>--`）会留下一个空壳，和框架自己的行为一致。
+- 级联删除依赖 `sessionPersistence.list()` 的快照里带 `header.parentSession`；该字段是契约里明写的，但只在单测与打桩里验证过级联，没有用真实的"父子都存在的会话"跑过端到端。
+- 活会话拒绝、`api-session/removed` 广播、删除编排现在有 `test/host-plugin.test.mjs` 直接驱动 `index.js` 覆盖（假 ctx + 临时 `$DSH_HOME`）；改这几处时别把那个测试一起改绿。
+
 
 ## 开发
 
@@ -63,6 +82,10 @@ MIT © 2026 xqh-jason
 
 Why: the shipped workspace delete lives behind a hover menu on the group header (and is easiest to reach with the group collapsed), sessions can only be archived, and the framework has no session-deletion API at all.
 
-Deleting a session also deletes its child sessions (forks and subagents). Live, open, or parent-of-a-live session requests are refused with zero changes. Attachments and other plugins' storage are never touched. The Host half publishes exactly one route, fenced to loopback-or-declared authorities with same-origin and JSON-only checks. No model-facing tool is registered on purpose: this is a user-only, irreversible action.
+Deleting a session also deletes its child sessions (forks and subagents). Live, open, or parent-of-a-live session requests are refused with zero changes. Attachments and other plugins' storage are never touched.
+
+Two session-id shapes exist on one machine — `session-<uuid>` and a bare uuid (teammates, subagents, some client-created sessions) — and both are accepted. The Host half publishes exactly one route: `POST` only, JSON only, 64 KiB cap, then the host's own `connection.requestRejection` gate where the deployment accepts remote authorities, otherwise this plugin's own loopback + same-origin fence. On a loopback-only Desktop deployment that route does **not** check the harness login (the gate's authentication half is unmeasured for that carrier), so any local process can call it; same-user processes can already read and write those session files. Treat it as a local tool, not a hardened multi-user service.
+
+No model-facing tool is registered on purpose: this is a user-only, irreversible action.
 
 Install with the plugin manager (`install_bundle` pointing at this directory), or manually with `dsh plugin --profile <profile> add <dir>` plus `dsh-sidebar-delete` in that profile's `dsh.profile.bundles`. Developed and verified against dsh `0.2.1-rc.2`.

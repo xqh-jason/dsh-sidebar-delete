@@ -15,16 +15,25 @@ import { readdir, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
-/** Session ids the harness mints: `session-<uuid>`. */
-export const SESSION_ID_PATTERN =
-  /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/**
+ * Shape of a session id on this harness.
+ *
+ * Two shapes are live in the same installation: `session-<uuid>` (the ids the
+ * Web client creates, e.g. `session-498652e9-…`) and a bare `<uuid>` (what
+ * teammate, subagent, and some client-created sessions get, e.g.
+ * `907e1e16-…`). An id is also used as one directory segment, so the pattern
+ * admits no separator, no `.`/`..`, and no leading dot: the value can never
+ * escape the session root through `path.join`.
+ */
+export const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 
 /**
  * @param value - candidate id from the wire.
  * @returns whether it is a well-formed session id.
  */
 export function isSessionId(value) {
-  return typeof value === 'string' && SESSION_ID_PATTERN.test(value)
+  if (typeof value !== 'string' || !SESSION_ID_PATTERN.test(value)) return false
+  return path.basename(value) === value
 }
 
 /**
@@ -163,11 +172,6 @@ export function collectSubtree(snapshots, rootId) {
   return ordered
 }
 
-/** A child id is treated as a descendant even when its parent link points outside the set. */
-export function hasDescendants(snapshots, rootId) {
-  return collectSubtree(snapshots, rootId).length > 1
-}
-
 /**
  * Remove the session directory and the projection-cache record of each id.
  *
@@ -184,6 +188,13 @@ export async function removeSessionFiles(options) {
   const missing = []
   const failures = []
   for (const id of ids) {
+    // The caller validated the id already; this second gate is here because an
+    // id is joined into two paths, so a traversal-shaped value must never reach
+    // `rm` even if a future caller forgets the check.
+    if (!isSessionId(id)) {
+      failures.push({ id: String(id), path: '', code: 'EBADID', message: 'refusing an id that is not a single path segment' })
+      continue
+    }
     let directory
     try {
       directory = await findSessionDir(sessionRoot, id, readdirImpl)
