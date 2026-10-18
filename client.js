@@ -50,6 +50,7 @@ window.__ModuleLoader__.load({
       'confirm.current': 'This is the open session and cannot be deleted.',
       'error.live': 'This session is still running or open. Stop it first.',
       'error.hostUnavailable': 'Delete failed: the Host half is unavailable. The plugin may be incomplete; restart dsh and retry.',
+      'error.serviceUnavailable': 'The workspace service is unavailable. The plugin may be incomplete; restart dsh and retry.',
       'error.generic': 'Delete failed: {message}',
       'manager.entry': 'Manage workspaces & sessions',
       'manager.title': 'Manage workspaces & sessions',
@@ -84,6 +85,7 @@ window.__ModuleLoader__.load({
       'confirm.current': '这是当前打开的会话，无法删除。',
       'error.live': '该会话仍在运行或已被打开，请先停止后再删除。',
       'error.hostUnavailable': '删除失败：Host 半不可用，插件可能没有完整安装，重启 dsh 后再试。',
+      'error.serviceUnavailable': '工作区服务不可用：插件可能没有完整安装，重启 dsh 后再试。',
       'error.generic': '删除失败：{message}',
       'manager.entry': '管理工作区与会话',
       'manager.title': '管理工作区与会话',
@@ -384,17 +386,62 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The one CPU-readable piece of text a rejected promise can contribute:
+     * an `Error` message or a plain string, otherwise `String(reason)`.
+     *
+     * An empty return means "no usable text": the caller classifies such a
+     * rejection as service unavailability and renders a locale sentence
+     * instead of interpolating a placeholder like `[object Object]`.
+     *
      * @param reason - anything a rejected promise or `fetch` produced.
-     * @returns a printable message.
+     * @returns the reason's own text, or `''`.
      */
     function errorMessage(reason) {
       if (reason instanceof Error && typeof reason.message === 'string' && reason.message !== '') return reason.message
       if (typeof reason === 'string' && reason !== '') return reason
       try {
-        return String(reason)
+        const text = String(reason)
+        return text === '[object Object]' ? '' : text
       } catch {
-        return 'unknown error'
+        return ''
       }
+    }
+
+    /**
+     * Marker code on the rejections this file raises itself, so they are
+     * recognized by identity and never by their (never rendered) message.
+     */
+    const CODE_SERVICE_UNAVAILABLE = 'dshsd/workspaces-service-unavailable'
+
+    /**
+     * A rejection saying the client half could not reach its Workspace
+     * service. The message is developer-facing only (logs); the UI words this
+     * through `failureText`.
+     *
+     * @returns the tagged error.
+     */
+    function serviceUnavailable() {
+      const error = new Error(CODE_SERVICE_UNAVAILABLE)
+      error.name = 'SidebarDeleteServiceError'
+      error.code = CODE_SERVICE_UNAVAILABLE
+      return error
+    }
+
+    /**
+     * Classify a rejected service call into a localizable failure. No English
+     * is composed here, and none is displayed: a rejection without usable text
+     * (or one of this file's own markers) reports the service as unavailable.
+     *
+     * @param reason - the rejection reason.
+     * @returns `{kind, message}` with `kind` `serviceUnavailable` or `generic`.
+     */
+    function failureOf(reason) {
+      if (reason !== null && typeof reason === 'object' && reason.code === CODE_SERVICE_UNAVAILABLE) {
+        return { kind: 'serviceUnavailable', message: '' }
+      }
+      const message = errorMessage(reason)
+      if (message === '') return { kind: 'serviceUnavailable', message: '' }
+      return { kind: 'generic', message }
     }
 
     /**
@@ -402,11 +449,13 @@ window.__ModuleLoader__.load({
      *
      * @param sessionId - the Session to delete.
      * @returns a plain outcome: `{ok:true}` or `{ok:false, kind, message}`
-     *   where `kind` is `hostUnavailable`, `live` or `generic`.
+     *   where `kind` is `hostUnavailable`, `live` or `generic`. The `message`
+     *   is the failing side's own text and is only ever rendered for `generic`
+     *   (through `error.generic`); on the other kinds it is a diagnostic.
      */
     async function requestSessionDelete(sessionId) {
       if (typeof document === 'undefined' || typeof fetch !== 'function') {
-        return { ok: false, kind: 'hostUnavailable', message: 'this runtime has no browser fetch' }
+        return { ok: false, kind: 'hostUnavailable', message: 'no-fetch' }
       }
       let url
       try {
@@ -426,7 +475,7 @@ window.__ModuleLoader__.load({
         return { ok: false, kind: 'hostUnavailable', message: errorMessage(error) }
       }
       if (response.status === 404) {
-        return { ok: false, kind: 'hostUnavailable', message: `HTTP 404 for ${url.pathname}` }
+        return { ok: false, kind: 'hostUnavailable', message: `HTTP ${response.status}` }
       }
       let payload = null
       try {
@@ -438,7 +487,10 @@ window.__ModuleLoader__.load({
         return { ok: true, deleted: Array.isArray(payload.deleted) ? payload.deleted : [] }
       }
       if (payload === null || typeof payload !== 'object') {
-        return { ok: false, kind: 'generic', message: `HTTP ${response.status}` }
+        // A well-formed Host half always answers with its own JSON; anything
+        // else means the route is not the plugin's, so the localized
+        // "Host half unavailable" sentence is the honest report.
+        return { ok: false, kind: 'hostUnavailable', message: `HTTP ${response.status}` }
       }
       const code = typeof payload.code === 'string' ? payload.code : ''
       const message = typeof payload.message === 'string' && payload.message !== '' ? payload.message : `HTTP ${response.status}`
@@ -447,16 +499,23 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Word one delete failure.
+     * Word one failure through the locale seat. The `live`, `serviceUnavailable`
+     * and `hostUnavailable` kinds each have their own sentence; every other
+     * kind goes through the caller's "…failed: {message}" key, and that message
+     * is the failing service's own text — this file never composes display text
+     * in English.
      *
-     * @param failure - the outcome from {@link requestSessionDelete}.
+     * @param failure - an outcome from {@link requestSessionDelete} or a
+     *   {@link failureOf} result.
      * @param t - locale seat.
-     * @returns the message to show.
+     * @param genericKey - the locale key taking `{message}`.
+     * @returns the sentence to show.
      */
-    function deleteFailureText(failure, t) {
-      if (failure.kind === 'hostUnavailable') return t('error.hostUnavailable')
+    function failureText(failure, t, genericKey) {
       if (failure.kind === 'live') return t('error.live')
-      return t('error.generic', { message: failure.message })
+      if (failure.kind === 'serviceUnavailable') return t('error.serviceUnavailable')
+      if (failure.kind === 'hostUnavailable') return t('error.hostUnavailable')
+      return t(genericKey, { message: failure.message })
     }
 
     /**
@@ -731,7 +790,11 @@ window.__ModuleLoader__.load({
               { className: 'dshsd-confirm-box' },
               h('p', { className: 'dshsd-text' }, t('manager.deleteWorkspaceConfirm', { title })),
               confirm.failure !== null
-                ? h('p', { className: 'dshsd-error', role: 'alert' }, t('manager.deleteWorkspaceFailed', { message: confirm.failure }))
+                ? h(
+                    'p',
+                    { className: 'dshsd-error', role: 'alert' },
+                    failureText(confirm.failure, t, 'manager.deleteWorkspaceFailed'),
+                  )
                 : null,
               h(
                 'div',
@@ -823,7 +886,7 @@ window.__ModuleLoader__.load({
           })
           .catch((error) => {
             setRegistering(null)
-            setRegisterFailure({ path, message: errorMessage(error) })
+            setRegisterFailure({ path, failure: failureOf(error) })
           })
       }
 
@@ -838,7 +901,7 @@ window.__ModuleLoader__.load({
           })
           .catch((error) => {
             setConfirm((current) =>
-              current === null || current.workspaceId !== workspaceId ? current : { ...current, pending: false, failure: errorMessage(error) },
+              current === null || current.workspaceId !== workspaceId ? current : { ...current, pending: false, failure: failureOf(error) },
             )
           })
       }
@@ -902,13 +965,13 @@ window.__ModuleLoader__.load({
                 { className: 'dshsd-section' },
                 h('h3', { className: 'dshsd-section-title' }, t('manager.ungrouped')),
                 orphanFailure !== null
-                  ? h('p', { className: 'dshsd-error', role: 'alert' }, t('manager.register.failed', { message: orphanFailure.message }))
+                  ? h('p', { className: 'dshsd-error', role: 'alert' }, failureText(orphanFailure.failure, t, 'manager.register.failed'))
                   : null,
                 model.groups.length === 0 ? h('p', { className: 'dshsd-empty' }, t('manager.empty')) : null,
                 model.groups.map((group) => {
                   const path = group.path
                   const busy = path !== null && registering === path
-                  const failure = path !== null && registerFailure !== null && registerFailure.path === path ? registerFailure : null
+                  const failure = path !== null && registerFailure !== null && registerFailure.path === path ? registerFailure.failure : null
                   return h(
                     'div',
                     { className: 'dshsd-group', key: path === null ? '\u0000none' : path },
@@ -932,7 +995,7 @@ window.__ModuleLoader__.load({
                       h('span', { className: 'dshsd-group-count' }, t('manager.sessions', { n: group.sessions.length })),
                     ),
                     failure !== null
-                      ? h('p', { className: 'dshsd-error', role: 'alert' }, t('manager.register.failed', { message: failure.message }))
+                      ? h('p', { className: 'dshsd-error', role: 'alert' }, failureText(failure, t, 'manager.register.failed'))
                       : null,
                     sessionList(group.sessions, {
                       t,
@@ -1011,7 +1074,7 @@ window.__ModuleLoader__.load({
           h('p', { className: 'dshsd-text' }, t('confirm.desc')),
           cascade > 0 ? h('p', { className: 'dshsd-text' }, t('confirm.cascade', { n: cascade })) : null,
           open === true ? h('p', { className: 'dshsd-error', role: 'alert' }, t('confirm.current')) : null,
-          failure !== null ? h('p', { className: 'dshsd-error', role: 'alert' }, deleteFailureText(failure, t)) : null,
+          failure !== null ? h('p', { className: 'dshsd-error', role: 'alert' }, failureText(failure, t, 'error.generic')) : null,
           h(
             'div',
             { className: 'dshsd-actions' },
@@ -1071,14 +1134,14 @@ window.__ModuleLoader__.load({
       const deleteWorkspace = async (workspaceId) => {
         const service = workspaceService()
         if (service === null || service === undefined || typeof service.delete !== 'function') {
-          throw new Error('the workspaces service is unavailable')
+          throw serviceUnavailable()
         }
         await service.delete(workspaceId)
       }
       const createWorkspace = async (path) => {
         const service = workspaceService()
         if (service === null || service === undefined || typeof service.create !== 'function') {
-          throw new Error('the workspaces service is unavailable')
+          throw serviceUnavailable()
         }
         await service.create({ path })
       }

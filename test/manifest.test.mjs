@@ -123,6 +123,14 @@ test('the embedded dictionaries equal the shipped locale files', async () => {
   }
 })
 
+test('every locale key the browser half asks for exists', async () => {
+  const zhFile = JSON.parse(await read('locale/zh.json'))
+  const used = [...clientCode.matchAll(/\bt\(\s*'([^']+)'/g)].map((match) => match[1])
+  assert.ok(used.length >= 20, 'the browser half should ask for its copy through t()')
+  const missing = [...new Set(used)].filter((key) => !(key in zhFile))
+  assert.deepEqual(missing, [], `t() keys missing from locale/zh.json: ${missing.join(', ')}`)
+})
+
 test('the icon is a small SVG shipped from inside the package', async () => {
   const icon = await read('icon.svg')
   assert.match(icon, /<svg/)

@@ -14,6 +14,7 @@
   "confirm.current": "这是当前打开的会话，无法删除。",
   "error.live": "该会话仍在运行或已被打开，请先停止后再删除。",
   "error.hostUnavailable": "删除失败：Host 半不可用，插件可能没有完整安装，重启 dsh 后再试。",
+  "error.serviceUnavailable": "工作区服务不可用：插件可能没有完整安装，重启 dsh 后再试。",
   "error.generic": "删除失败：{message}",
   "manager.entry": "管理工作区与会话",
   "manager.title": "管理工作区与会话",

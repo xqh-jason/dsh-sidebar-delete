@@ -14,6 +14,7 @@
   "confirm.current": "This is the open session and cannot be deleted.",
   "error.live": "This session is still running or open. Stop it first.",
   "error.hostUnavailable": "Delete failed: the Host half is unavailable. The plugin may be incomplete; restart dsh and retry.",
+  "error.serviceUnavailable": "The workspace service is unavailable. The plugin may be incomplete; restart dsh and retry.",
   "error.generic": "Delete failed: {message}",
   "manager.entry": "Manage workspaces & sessions",
   "manager.title": "Manage workspaces & sessions",
