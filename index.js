@@ -155,7 +155,7 @@ async function deleteSession(ctx, requestedId) {
       // pin set, and per-workspace accounting). Retire those references here so
       // this plugin cannot leave dangling ids behind; both removal paths are
       // documented as tolerating a session that no longer exists.
-      result.registrations = await cleanRegistrations(ctx, result.deleted)
+      result.cleanupSteps = await cleanRegistrations(ctx, result.deleted)
     }
     if (result.ok) log(ctx, 'info', `sidebar-delete: deleted ${result.deleted.join(', ')}`)
     else log(ctx, 'warn', `sidebar-delete: ${requestedId} not deleted (${result.code})`, result.failures ?? result.live)
@@ -179,7 +179,8 @@ async function deleteSession(ctx, requestedId) {
  *
  * @param ctx - host context.
  * @param ids - the sessions this request deleted.
- * @returns how many references were retired, or undefined when the service is absent.
+ * @returns how many cleanup calls resolved, or undefined when the service is absent.
+ *   The services' removals are void, so this is a step count, not a removed-reference count.
  */
 async function cleanRegistrations(ctx, ids) {
   const registry = ctx.get('workspaceRegistry')
@@ -210,9 +211,13 @@ async function cleanRegistrations(ctx, ids) {
     return retired
   }
   for (const workspace of workspaces) {
-    const listed = Array.isArray(workspace?.sessionIds) ? workspace.sessionIds : []
+    if (typeof workspace?.detachSession !== 'function') continue
     for (const id of ids) {
-      if (!listed.includes(id) || typeof workspace.detachSession !== 'function') continue
+      // Deliberately not guarded by `workspace.sessionIds.includes(id)`:
+      // that getter filters ids whose session is unknown, which is exactly the
+      // dangling entry being retired here. `detachSession` filters the raw
+      // record and its write path skips an unchanged record, so calling it for
+      // every workspace is both safe and the only way to reach such an id.
       try {
         await workspace.detachSession(id)
         retired += 1

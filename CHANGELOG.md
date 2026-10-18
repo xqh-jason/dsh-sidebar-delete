@@ -2,11 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.3] - 2026-10-18
+
+### 修复
+
+- **悬空的工作区成员摘不掉**（0.1.2 上线时实测发现：归档集合 8→1 清干净了，工作区成员 4 条一条没动）。原因是 `Workspace.sessionIds` 的 getter 会 `filter(id => host.candidateMatches(id, path))`，会话已不存在的 id 永远不在这个列表里，而我用它做了"只从列出该 id 的工作区里摘"的前置判断，于是永远跳过。`detachSession` 本身直接过滤原始 record、不要求 id 在列表里，`mutate` 在无变化时还会跳过写盘——所以改成对每个工作区**无条件**调用。新增测试覆盖"实体已不列出该 id 时仍被摘除"。
+- **响应字段名不副实**：`registrations` 改成 `cleanupSteps`。`unarchiveSession` / `unpinSession` / `detachSession` 都返回 void，且在没有可移除引用时也正常 resolve，所以原字段报的是"清理调用成功次数"，不是"移除条数"，改名前它会误导。
+
 ## [0.1.2] - 2026-10-18
 
 ### 修复
 
-- **删除会话后不再留下悬空登记**：0.1.1 及以前删掉的会话 id 会留在 workspace 服务的归档集合、置顶集合和工作区成员列表里。用户质疑"为什么不能清理"后复查 `@deepseek-ai/dsh-workspace/lib/index.js` 发现：`unarchiveSession`（注释明写不校验存在性）与 `Workspace.detachSession` 都能安全移除一个已不存在会话的引用，属于此前漏查的官方 API。现在删除成功后会依次调用 `unarchiveSession` / `unpinSession` / 每个工作区的 `detachSession`，并把退休条数回填到响应的 `registrations` 字段。
+- **删除会话后不再留下悬空登记**：0.1.1 及以前删掉的会话 id 会留在 workspace 服务的归档集合、置顶集合和工作区成员列表里。用户质疑"为什么不能清理"后复查 `@deepseek-ai/dsh-workspace/lib/index.js` 发现：`unarchiveSession`（注释明写不校验存在性）与 `Workspace.detachSession` 都能安全移除一个已不存在会话的引用，属于此前漏查的官方 API。现在删除成功后会依次调用 `unarchiveSession` / `unpinSession` / 每个工作区的 `detachSession`，并把清理步数回填到响应字段。
 - 清理失败只记 warn，不会把一次成功的删除变成失败（有测试覆盖：workspace 服务抛错时仍返回 200）。
 - 新增 3 条测试（66 个用例）：删除后清登记、活会话拒绝时零登记改动、服务坏掉不影响删除结果。
 

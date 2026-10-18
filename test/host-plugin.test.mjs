@@ -378,11 +378,13 @@ test('a persistence failure answers an internal error instead of throwing', asyn
 })
 
 /** @returns a workspace service double recording the cleanup calls it receives. */
-function registryDouble(listedIds) {
+function registryDouble(listedIds, visibleIds = listedIds) {
   const calls = { unarchived: [], unpinned: [], detached: [] }
   const workspace = {
     path: '/somewhere',
-    sessionIds: [...listedIds],
+    // Mirrors the real entity: the getter filters ids whose session is unknown,
+    // so a dangling member is absent here while `detachSession` can still remove it.
+    sessionIds: [...visibleIds],
     async detachSession(id) {
       calls.detached.push(id)
     },
@@ -415,7 +417,7 @@ test('a deleted session is retired from the workspace service as well as the dis
   assert.deepEqual(calls.unarchived, [UNRELATED], 'the archived id is retired')
   assert.deepEqual(calls.unpinned, [UNRELATED], 'the pinned id is retired')
   assert.deepEqual(calls.detached, [UNRELATED], 'only the deleted id leaves a workspace account')
-  assert.equal(json(res).registrations, 2, 'one unarchive plus one detach')
+  assert.equal(json(res).cleanupSteps, 2, 'one unarchive plus one detach')
 })
 
 test('a live refusal retires no registration', async () => {
@@ -451,4 +453,18 @@ test('a broken workspace service never turns a successful delete into a failure'
   assert.equal(res.status, 200)
   assert.equal(json(res).ok, true)
   assert.equal(existsSync(path.join(home.projectDir, UNRELATED)), false)
+})
+
+test('a dangling membership is retired even though the entity no longer lists it', async () => {
+  const home = await makeHome([])
+  process.env.DSH_HOME = home.base
+  // `sessionIds` hides the dangling id exactly as the real getter does.
+  const { calls, registry } = registryDouble([], [])
+  const { handler } = mount({ snapshots: [], workspaceRegistry: registry })
+
+  const res = response()
+  await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(calls.detached, [UNRELATED], 'detach must not depend on the filtered getter')
 })
