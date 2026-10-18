@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.5] - 2026-10-18
+
+只补文档的补发版本：0.1.4 发布之后 README 又补了 npm 徽章和"国内镜像把 npm 的 `0.0.0-stage` staging 版本当 latest"这个坑的绕法，而 npm 包内嵌的是发布那一刻的 README。**零代码改动**，行为与 0.1.4 完全一致。
+
+### 变更
+
+- 包内 README 更新为含 npm 徽章、`--registry=https://registry.npmjs.org/` 绕法与坏 lockfile 提示的版本。
+- 67 个测试、`node --check` ×5、打包清单均与 0.1.4 一致（仅本文件与 README 变化）。
+
 ## [0.1.4] - 2026-10-18
 
 首个可以发到 npm 的版本（此前 `private: true` 会让 npm 直接拒发）。**已于 2026-10-18 发布：`dsh-sidebar-delete@0.1.4`**（tarball shasum `89d7f252…`，从 registry 装回的校验和与发布时一致）。
