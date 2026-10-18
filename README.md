@@ -1,6 +1,7 @@
 # dsh-sidebar-delete
 
 [![ci](https://github.com/xqh-jason/dsh-sidebar-delete/actions/workflows/ci.yml/badge.svg)](https://github.com/xqh-jason/dsh-sidebar-delete/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/dsh-sidebar-delete.svg)](https://www.npmjs.com/package/dsh-sidebar-delete)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）Web 侧栏补上**删除**：会话可以真删（连带本地日志、投影缓存与工作区登记，子会话级联），工作区与未分组会话有一个常显的管理入口。
@@ -22,7 +23,7 @@ dsh 自带的工作区删除入口藏在工作区分组标题的悬停菜单里�
 
 ## 安装
 
-包名就是 bundle 名：`dsh-sidebar-delete`，装完出现在插件列表里。
+已发布在 npm：[dsh-sidebar-delete](https://www.npmjs.com/package/dsh-sidebar-delete)（当前 `0.1.4`）。包名就是 bundle 名，装完出现在插件列表里。
 
 Harness Desktop / Web 里：**设置 → 插件**，装这个包（插件管理器会从 npm 拉取，并把它写进 profile 的 `dsh.profile.bundles`）。
 
@@ -33,6 +34,8 @@ dsh plugin --profile <profile> add dsh-sidebar-delete
 ```
 
 > Desktop 用的 `desktop` profile 由 Electron app 独占，CLI 会拒绝 `--profile desktop`；桌面上请走 app 内的插件页。
+
+> **国内镜像的坑**：npm 发布时会在 registry 留下一个 `0.0.0-stage` 的 staging 版本（340 字节的占位，tarball 是截断的）。`registry.npmmirror.com` 偶尔会把这个 staging 版本当成 `latest` 缓存下来，此时 `pnpm add` 会报 `ERR_PNPM_TARBALL_EXTRACT`。绕法二选一：加 `--registry=https://registry.npmjs.org/` 装一次；或删掉该 profile 里的 `pnpm-lock.yaml` 后重试（坏 lockfile 会一直钉在 staging 版本上）。官方源的 `dist-tags.latest` 是对的（`0.1.4`）。
 
 装完**重启 dsh**：Host 半只在启动时加载，改它必须重启；只改浏览器半刷新页面即可。
 

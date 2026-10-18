@@ -4,7 +4,7 @@
 
 ## [0.1.4] - 2026-10-18
 
-首个可以发到 npm 的版本（此前 `private: true` 会让 npm 直接拒发）。
+首个可以发到 npm 的版本（此前 `private: true` 会让 npm 直接拒发）。**已于 2026-10-18 发布：`dsh-sidebar-delete@0.1.4`**（tarball shasum `89d7f252…`，从 registry 装回的校验和与发布时一致）。
 
 ### 变更
 
