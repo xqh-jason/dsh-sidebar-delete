@@ -144,7 +144,7 @@ async function deleteSession(ctx, requestedId) {
     const result = await deleteSessionBranch({
       snapshots: await listSnapshots(ctx),
       rootId: requestedId,
-      isLive: (id) => isLive(ctx, id),
+      liveness: (id) => livenessOf(ctx, id),
       sessionRoot: resolveSessionRoot({ configRoot: configuredSessionRoot(ctx) }),
       projcacheDir: projectionCacheDir(defaultStoragesRoot()),
       remove: removeSessionFiles,
@@ -242,23 +242,57 @@ async function listSnapshots(ctx) {
 }
 
 /**
- * Whether a session is live in this process: entered in the session store or
- * held by an agent. Deleting files underneath either would corrupt state.
+ * Classify one session's liveness, and — when it is live — whether a turn is
+ * actually open.
+ *
+ * The harness keeps an agent alive for a session that was merely opened and
+ * never released, which is why "live" alone is the wrong refusal test: it would
+ * refuse idle, invisible sessions. Deleting underneath an OPEN TURN is what
+ * corrupts state, so that is the only thing refused; when an agent holds a
+ * session whose event stream cannot be read, the answer is "unknown" and the
+ * caller refuses under its own code.
  *
  * @param ctx - host context.
  * @param sessionId - candidate.
- * @returns whether the session is live.
+ * @returns `{live, running}` where `running: undefined` means unknown.
  */
-function isLive(ctx, sessionId) {
+function livenessOf(ctx, sessionId) {
   const sessions = ctx.get('sessions')
-  if (sessions !== undefined && typeof sessions.get === 'function' && sessions.get(sessionId) !== undefined) {
-    return true
-  }
+  const session = sessions !== undefined && typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
+  if (session !== undefined) return { live: true, running: isTurnOpen(session) }
   const agents = ctx.get('agents')
   if (agents !== undefined && typeof agents.get === 'function' && agents.get(sessionId) !== undefined) {
-    return true
+    return { live: true, running: undefined }
   }
-  return false
+  return { live: false, running: false }
+}
+
+/**
+ * Whether a live session has an open turn.
+ *
+ * Reads the last committed events: the newest `turn/end` before any `turn/start`
+ * means idle. A session with no turn events at all (freshly created, never
+ * prompted) is idle. Any failure to read the stream counts as "unknown", which
+ * the caller treats as busy.
+ *
+ * @param session - a live harness session.
+ * @returns whether a turn is open; `undefined` when the stream cannot be read.
+ */
+function isTurnOpen(session) {
+  try {
+    const last = Number(session.seq) - 1
+    if (!Number.isFinite(last)) return undefined
+    const floor = Math.max(0, last - 500)
+    for (let seq = last; seq >= floor; seq -= 1) {
+      const event = session.eventAt(seq)
+      if (event === undefined) continue
+      if (event.type === 'turn/end') return false
+      if (event.type === 'turn/start') return true
+    }
+    return false
+  } catch {
+    return undefined
+  }
 }
 
 /**

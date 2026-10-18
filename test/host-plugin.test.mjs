@@ -52,13 +52,30 @@ async function makeHome(ids) {
   return { base, projectDir, projcache }
 }
 
+/** Event types of a session whose last turn ended (idle). */
+const OPEN_TURN = 'turn/start'
+const CLOSED_TURN = 'turn/end'
+
+/**
+ * A live-session double exposing the two members the liveness scan reads.
+ *
+ * @param types - the session's event types, in order.
+ * @returns a fake session whose `seq` is the next offset.
+ */
+function turnSession(types) {
+  return {
+    seq: types.length,
+    eventAt: (seq) => (types[seq] === undefined ? undefined : { type: types[seq], seq }),
+  }
+}
+
 /**
  * Mount the plugin on a fake host context.
  *
  * @returns the registered handler, the routes, the emitted events, and the ctx.
  */
 function mount(options = {}) {
-  const { live = [], snapshots = [], connection, configRoot, workspaceRegistry } = options
+  const { idleLive = [], running = [], agentOnly = [], snapshots = [], connection, configRoot, workspaceRegistry } = options
   const routes = []
   const emitted = []
   const ctx = {
@@ -76,8 +93,16 @@ function mount(options = {}) {
       },
     },
     get(name) {
-      if (name === 'sessions') return { get: (id) => (live.includes(id) ? { id } : undefined) }
-      if (name === 'agents') return { get: () => undefined }
+      if (name === 'sessions') {
+        return {
+          get: (id) => {
+            if (running.includes(id)) return turnSession([OPEN_TURN])
+            if (idleLive.includes(id)) return turnSession([OPEN_TURN, CLOSED_TURN])
+            return undefined
+          },
+        }
+      }
+      if (name === 'agents') return { get: (id) => (agentOnly.includes(id) ? { id } : undefined) }
       if (name === 'sessionPersistence') {
         return {
           list: async () => {
@@ -163,10 +188,10 @@ test('a known session is deleted with its files and mirrored to clients', async 
   assert.deepEqual(emitted, [['api-session/removed', UNRELATED]])
 })
 
-test('a live session is refused with zero file changes and zero events', async () => {
+test('a session with an open turn is refused with zero file changes and zero events', async () => {
   const home = await makeHome([UNRELATED])
   process.env.DSH_HOME = home.base
-  const { handler, emitted } = mount({ live: [UNRELATED], snapshots: [{ header: { id: UNRELATED } }] })
+  const { handler, emitted } = mount({ running: [UNRELATED], snapshots: [{ header: { id: UNRELATED } }] })
 
   const res = response()
   await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
@@ -186,7 +211,7 @@ test('a live child refuses the whole branch', async () => {
   const home = await makeHome([PARENT, BARE_CHILD])
   process.env.DSH_HOME = home.base
   const snapshots = [{ header: { id: PARENT } }, { header: { id: BARE_CHILD, parentSession: PARENT } }]
-  const { handler, emitted } = mount({ live: [BARE_CHILD], snapshots })
+  const { handler, emitted } = mount({ running: [BARE_CHILD], snapshots })
 
   const res = response()
   await handler(request({ body: JSON.stringify({ sessionId: PARENT }) }), res)
@@ -424,7 +449,7 @@ test('a live refusal retires no registration', async () => {
   const home = await makeHome([UNRELATED])
   process.env.DSH_HOME = home.base
   const { calls, registry } = registryDouble([UNRELATED])
-  const { handler } = mount({ live: [UNRELATED], snapshots: [{ header: { id: UNRELATED } }], workspaceRegistry: registry })
+  const { handler } = mount({ running: [UNRELATED], snapshots: [{ header: { id: UNRELATED } }], workspaceRegistry: registry })
 
   const res = response()
   await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
@@ -467,4 +492,35 @@ test('a dangling membership is retired even though the entity no longer lists it
 
   assert.equal(res.status, 200)
   assert.deepEqual(calls.detached, [UNRELATED], 'detach must not depend on the filtered getter')
+})
+
+test('a session the host still holds but whose last turn ended IS deletable', async () => {
+  const home = await makeHome([UNRELATED])
+  process.env.DSH_HOME = home.base
+  // The reported case: an agent is alive for a session nobody is looking at,
+  // and the log's last turn already ended. Refusing it made the user stuck.
+  const { handler, emitted } = mount({ idleLive: [UNRELATED], snapshots: [{ header: { id: UNRELATED } }] })
+
+  const res = response()
+  await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(json(res).deleted, [UNRELATED])
+  assert.equal(existsSync(path.join(home.projectDir, UNRELATED)), false)
+  assert.deepEqual(emitted, [['api-session/removed', UNRELATED]])
+})
+
+test('an agent-held session whose activity cannot be read is refused with its own code', async () => {
+  const home = await makeHome([UNRELATED])
+  process.env.DSH_HOME = home.base
+  const { handler, emitted } = mount({ agentOnly: [UNRELATED], snapshots: [{ header: { id: UNRELATED } }] })
+
+  const res = response()
+  await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
+
+  assert.equal(res.status, 409)
+  assert.equal(json(res).code, 'session-held')
+  assert.deepEqual(json(res).running, [])
+  assert.equal(existsSync(path.join(home.projectDir, UNRELATED)), true)
+  assert.deepEqual(emitted, [])
 })

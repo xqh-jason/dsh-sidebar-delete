@@ -12,7 +12,8 @@
   "confirm.cancel": "Cancel",
   "confirm.pending": "Deleting…",
   "confirm.current": "This is the open session and cannot be deleted.",
-  "error.live": "This session is still running or open. Stop it first.",
+  "error.live": "This session (or one of its child sessions) is still running. Stop it first.",
+  "error.held": "The host still holds this session. Restart dsh and try again.",
   "error.hostUnavailable": "Delete failed: the Host half is unavailable. The plugin may be incomplete; restart dsh and retry.",
   "error.serviceUnavailable": "The workspace service is unavailable. The plugin may be incomplete; restart dsh and retry.",
   "error.generic": "Delete failed: {message}",
@@ -40,5 +41,6 @@
   "manager.current": "Open now",
   "manager.blank": "Blank",
   "manager.childCount": "includes {n} child session(s)",
-  "manager.rowMeta": "{id} · {time}"
+  "manager.rowMeta": "{id} · {time}",
+  "manager.blockedCurrent": "Open in the main view — switch to another session first"
 }

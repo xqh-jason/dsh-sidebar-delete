@@ -48,7 +48,8 @@ window.__ModuleLoader__.load({
       'confirm.cancel': 'Cancel',
       'confirm.pending': 'Deleting…',
       'confirm.current': 'This is the open session and cannot be deleted.',
-      'error.live': 'This session is still running or open. Stop it first.',
+      'error.live': 'This session (or one of its child sessions) is still running. Stop it first.',
+      'error.held': 'The host still holds this session. Restart dsh and try again.',
       'error.hostUnavailable': 'Delete failed: the Host half is unavailable. The plugin may be incomplete; restart dsh and retry.',
       'error.serviceUnavailable': 'The workspace service is unavailable. The plugin may be incomplete; restart dsh and retry.',
       'error.generic': 'Delete failed: {message}',
@@ -77,6 +78,7 @@ window.__ModuleLoader__.load({
       'manager.blank': 'Blank',
       'manager.childCount': 'includes {n} child session(s)',
       'manager.rowMeta': '{id} · {time}',
+      'manager.blockedCurrent': 'Open in the main view — switch to another session first',
     }
 
     /** Simplified Chinese dictionary (mirrors `locale/zh.json` minus `meta`). */
@@ -90,7 +92,8 @@ window.__ModuleLoader__.load({
       'confirm.cancel': '取消',
       'confirm.pending': '正在删除…',
       'confirm.current': '这是当前打开的会话，无法删除。',
-      'error.live': '该会话仍在运行或已被打开，请先停止后再删除。',
+      'error.live': '该会话（或它的子会话）仍在运行，请先停止后再删除。',
+      'error.held': '宿主仍占用这个会话，暂时删不了；重启 dsh 后再试一次。',
       'error.hostUnavailable': '删除失败：Host 半不可用，插件可能没有完整安装，重启 dsh 后再试。',
       'error.serviceUnavailable': '工作区服务不可用：插件可能没有完整安装，重启 dsh 后再试。',
       'error.generic': '删除失败：{message}',
@@ -119,6 +122,7 @@ window.__ModuleLoader__.load({
       'manager.blank': '空会话',
       'manager.childCount': '含 {n} 条子会话',
       'manager.rowMeta': '{id} · {time}',
+      'manager.blockedCurrent': '当前打开的会话，先切到别的会话再删',
     }
 
     /** Theme-token-only sheet; every class is prefixed `dshsd-`. */
@@ -470,9 +474,10 @@ window.__ModuleLoader__.load({
      *
      * @param sessionId - the Session to delete.
      * @returns a plain outcome: `{ok:true}` or `{ok:false, kind, message}`
-     *   where `kind` is `hostUnavailable`, `live` or `generic`. The `message`
-     *   is the failing side's own text and is only ever rendered for `generic`
-     *   (through `error.generic`); on the other kinds it is a diagnostic.
+     *   where `kind` is `hostUnavailable`, `live`, `held` or `generic`. The
+     *   `message` is the failing side's own text and is only ever rendered for
+     *   `generic` (through `error.generic`); on the other kinds it is a
+     *   diagnostic.
      */
     async function requestSessionDelete(sessionId) {
       if (typeof document === 'undefined' || typeof fetch !== 'function') {
@@ -516,15 +521,20 @@ window.__ModuleLoader__.load({
       const code = typeof payload.code === 'string' ? payload.code : ''
       const message = typeof payload.message === 'string' && payload.message !== '' ? payload.message : `HTTP ${response.status}`
       if (code === 'session-active') return { ok: false, kind: 'live', message }
+      if (code === 'session-held') return { ok: false, kind: 'held', message }
       return { ok: false, kind: 'generic', message }
     }
 
     /**
-     * Word one failure through the locale seat. The `live`, `serviceUnavailable`
-     * and `hostUnavailable` kinds each have their own sentence; every other
-     * kind goes through the caller's "…failed: {message}" key, and that message
-     * is the failing service's own text — this file never composes display text
-     * in English.
+     * Word one failure through the locale seat. The `live`, `held`,
+     * `serviceUnavailable` and `hostUnavailable` kinds each have their own
+     * sentence; every other kind goes through the caller's "…failed: {message}"
+     * key, and that message is the failing service's own text — this file never
+     * composes display text in English.
+     *
+     * `live` and `held` are the Host's two refusals: open/running work versus a
+     * session the process still holds but is no longer running (restarting dsh
+     * releases it).
      *
      * @param failure - an outcome from {@link requestSessionDelete} or a
      *   {@link failureOf} result.
@@ -534,6 +544,7 @@ window.__ModuleLoader__.load({
      */
     function failureText(failure, t, genericKey) {
       if (failure.kind === 'live') return t('error.live')
+      if (failure.kind === 'held') return t('error.held')
       if (failure.kind === 'serviceUnavailable') return t('error.serviceUnavailable')
       if (failure.kind === 'hostUnavailable') return t('error.hostUnavailable')
       return t(genericKey, { message: failure.message })
@@ -668,6 +679,10 @@ window.__ModuleLoader__.load({
      * used here, because the controller derives it from the cwd's directory
      * name, which is already the group heading.
      *
+     * The delete action is disabled (with its reason as the label and tooltip)
+     * for the row the main view holds and for a running row — the two states
+     * the Host would refuse anyway.
+     *
      * @param node - `{row, depth, descendants}` from {@link flattenForest}.
      * @param options - `{t, requestDelete, hint}`.
      * @returns the list item.
@@ -678,7 +693,13 @@ window.__ModuleLoader__.load({
       const title = typeof row.title === 'string' && row.title !== '' ? row.title : t('manager.untitled')
       const badges = rowBadges(row, t)
       const tooltip = typeof hint === 'string' && hint !== '' ? `${title} — ${hint}` : title
-      const label = t('rowAction.delete')
+      // Only the session displayed in the main view is blocked on the control:
+      // that signal is exact. A row's `running` flag comes from the list
+      // snapshot and can lag behind a finished turn, and a stale flag must not
+      // disable the button on a session that is actually idle — the Host checks
+      // for an open turn itself and answers with an accurate reason.
+      const blocked = isSessionRetained(row) ? t('manager.blockedCurrent') : null
+      const label = blocked === null ? t('rowAction.delete') : blocked
       return h(
         'li',
         {
@@ -714,6 +735,7 @@ window.__ModuleLoader__.load({
             className: 'dshsd-icon-button dshsd-session-delete',
             'aria-label': label,
             title: label,
+            disabled: blocked !== null,
             onClick: () => requestDelete(row.id, typeof row.title === 'string' ? row.title : ''),
           },
           iconTrash(14),

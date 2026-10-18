@@ -32,42 +32,58 @@ function removeSpy(result = { removed: [], missing: [], failures: [] }) {
   return remove
 }
 
+const idle = () => ({ live: false, running: false })
+
 test('planDelete covers the requested session and every descendant', () => {
-  const plan = planDelete(SNAPSHOTS, PARENT, () => false)
+  const plan = planDelete(SNAPSHOTS, PARENT, idle)
   assert.deepEqual(plan.targets, [PARENT, CHILD, GRANDCHILD])
-  assert.deepEqual(plan.live, [])
+  assert.deepEqual(plan.blocked, [])
+  assert.deepEqual(plan.running, [])
   assert.equal(plan.allowed, true)
-  assert.deepEqual(planDelete(SNAPSHOTS, UNRELATED, () => false).targets, [UNRELATED])
+  assert.deepEqual(planDelete(SNAPSHOTS, UNRELATED, idle).targets, [UNRELATED])
 })
 
 test('planDelete still attempts an unknown id, so a failed listing cannot strand a session', () => {
   const unknown = 'session-99999999-9999-4999-8999-999999999999'
-  assert.deepEqual(planDelete(SNAPSHOTS, unknown, () => false).targets, [unknown])
-  assert.deepEqual(planDelete([], unknown, () => false).targets, [unknown])
+  assert.deepEqual(planDelete(SNAPSHOTS, unknown, idle).targets, [unknown])
+  assert.deepEqual(planDelete([], unknown, idle).targets, [unknown])
 })
 
-test('planDelete refuses when any node of the branch is live', () => {
-  const childLive = planDelete(SNAPSHOTS, PARENT, (id) => id === CHILD)
-  assert.equal(childLive.allowed, false)
-  assert.deepEqual(childLive.live, [CHILD])
-  const rootLive = planDelete(SNAPSHOTS, PARENT, (id) => id === PARENT)
-  assert.equal(rootLive.allowed, false)
+test('planDelete refuses only a branch with an OPEN TURN', () => {
+  const childRunning = planDelete(SNAPSHOTS, PARENT, (id) => (id === CHILD ? { live: true, running: true } : idle()))
+  assert.equal(childRunning.allowed, false)
+  assert.deepEqual(childRunning.blocked, [CHILD])
+  assert.deepEqual(childRunning.running, [CHILD])
 })
 
-test('planDelete treats a throwing liveness predicate as "live"', () => {
+test('planDelete allows a session that is live but idle, and one held with unknown activity blocks', () => {
+  // Exactly the case a user reported: the host still holds an agent for a
+  // session nobody is looking at, and its last turn already ended.
+  const idleLive = planDelete(SNAPSHOTS, PARENT, (id) => (id === PARENT ? { live: true, running: false } : idle()))
+  assert.equal(idleLive.allowed, true)
+  assert.deepEqual(idleLive.blocked, [])
+
+  const unknown = planDelete(SNAPSHOTS, PARENT, (id) => (id === PARENT ? { live: true, running: undefined } : idle()))
+  assert.equal(unknown.allowed, false)
+  assert.deepEqual(unknown.blocked, [PARENT])
+  assert.deepEqual(unknown.running, [], 'an unknown state is not reported as running')
+})
+
+test('planDelete treats a throwing liveness predicate as held, not as idle', () => {
   const plan = planDelete(SNAPSHOTS, PARENT, () => {
     throw new Error('store unavailable')
   })
   assert.equal(plan.allowed, false)
-  assert.deepEqual(plan.live, [PARENT, CHILD, GRANDCHILD])
+  assert.deepEqual(plan.blocked, [PARENT, CHILD, GRANDCHILD])
+  assert.deepEqual(plan.running, [])
 })
 
-test('deleteSessionBranch refuses a live branch without touching any file', async () => {
+test('deleteSessionBranch refuses a branch with an open turn without touching any file', async () => {
   const remove = removeSpy()
   const result = await deleteSessionBranch({
     snapshots: SNAPSHOTS,
     rootId: PARENT,
-    isLive: (id) => id === GRANDCHILD,
+    liveness: (id) => (id === GRANDCHILD ? { live: true, running: true } : idle()),
     sessionRoot: '/nonexistent',
     projcacheDir: '/nonexistent',
     remove,
@@ -75,6 +91,7 @@ test('deleteSessionBranch refuses a live branch without touching any file', asyn
   assert.equal(result.ok, false)
   assert.equal(result.code, 'session-active')
   assert.deepEqual(result.live, [GRANDCHILD])
+  assert.deepEqual(result.running, [GRANDCHILD])
   assert.deepEqual(result.deleted, [])
   assert.equal(remove.calls.length, 0, 'a refused delete must not reach the filesystem')
 })
@@ -84,7 +101,7 @@ test('deleteSessionBranch removes the whole branch and reports every id', async 
   const result = await deleteSessionBranch({
     snapshots: SNAPSHOTS,
     rootId: PARENT,
-    isLive: () => false,
+    liveness: idle,
     sessionRoot: '/s',
     projcacheDir: '/p',
     remove,
@@ -100,7 +117,7 @@ test('deleteSessionBranch keeps the deleted ids visible when part of the branch 
   const result = await deleteSessionBranch({
     snapshots: SNAPSHOTS,
     rootId: PARENT,
-    isLive: () => false,
+    liveness: idle,
     sessionRoot: '/s',
     projcacheDir: '/p',
     remove,
@@ -113,7 +130,23 @@ test('deleteSessionBranch keeps the deleted ids visible when part of the branch 
 
 test('deleteSessionBranch requires a remove implementation', async () => {
   await assert.rejects(
-    deleteSessionBranch({ snapshots: [], rootId: PARENT, isLive: () => false, sessionRoot: '/s', projcacheDir: '/p' }),
+    deleteSessionBranch({ snapshots: [], rootId: PARENT, liveness: idle, sessionRoot: '/s', projcacheDir: '/p' }),
     TypeError,
   )
+})
+
+test('a held session reports its own code so the UI can say what to do', async () => {
+  const remove = removeSpy()
+  const result = await deleteSessionBranch({
+    snapshots: SNAPSHOTS,
+    rootId: PARENT,
+    liveness: (id) => (id === PARENT ? { live: true, running: undefined } : idle()),
+    sessionRoot: '/s',
+    projcacheDir: '/p',
+    remove,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'session-held')
+  assert.deepEqual(result.running, [])
+  assert.equal(remove.calls.length, 0)
 })

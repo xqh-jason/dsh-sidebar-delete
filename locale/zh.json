@@ -12,7 +12,8 @@
   "confirm.cancel": "取消",
   "confirm.pending": "正在删除…",
   "confirm.current": "这是当前打开的会话，无法删除。",
-  "error.live": "该会话仍在运行或已被打开，请先停止后再删除。",
+  "error.live": "该会话（或它的子会话）仍在运行，请先停止后再删除。",
+  "error.held": "宿主仍占用这个会话，暂时删不了；重启 dsh 后再试一次。",
   "error.hostUnavailable": "删除失败：Host 半不可用，插件可能没有完整安装，重启 dsh 后再试。",
   "error.serviceUnavailable": "工作区服务不可用：插件可能没有完整安装，重启 dsh 后再试。",
   "error.generic": "删除失败：{message}",
@@ -40,5 +41,6 @@
   "manager.current": "当前打开",
   "manager.blank": "空会话",
   "manager.childCount": "含 {n} 条子会话",
-  "manager.rowMeta": "{id} · {time}"
+  "manager.rowMeta": "{id} · {time}",
+  "manager.blockedCurrent": "当前打开的会话，先切到别的会话再删"
 }
