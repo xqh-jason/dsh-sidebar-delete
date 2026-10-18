@@ -15,7 +15,8 @@ dsh 自带的工作区删除入口藏在工作区分组标题的悬停菜单里�
 
 - 删除 `<DSH_HOME>/sessions/<项目目录>/<sessionId>/`（`session.vN.jsonl.zstd` 与 `session.lock`）
 - 删除 `<DSH_HOME>/storages/session_projcache/sessions/<sessionId>.json`
-- 不动：附件字节（内容寻址，可能被别的会话引用）、`workspace.json` 里该会话的登记项（会留下悬空 id，无害但脏）
+- 同时退休该会话在 workspace 服务里的登记：归档集合（`unarchiveSession`）、置顶集合（`unpinSession`）、以及每个工作区的成员列表（`Workspace.detachSession`）。这三条都是官方 API，且都不校验会话是否存在——移除引用不可能引入未知 id，所以它们正好能清掉一个已经不存在的会话。
+- 不动：附件字节（内容寻址，可能被别的会话引用）
 
 会**拒绝**删除并保持零改动的情况：会话正在运行、是当前打开的会话、或它的某个子会话还活着。删除**不可恢复**。
 
@@ -52,7 +53,7 @@ Host 半只发布一条路由 `POST /dsh-sidebar-delete/session`，准入顺序�
 
 其余已知残留（都在真实使用中观察到了，不是理论问题）：
 
-- 删掉的会话 id 会留在 `workspace.json` 里（`archivedSessionIds` / 工作区 `sessionIds`），因为宿主没有"注销单条会话"的 API。悬空 id 不参与渲染（衍生行要求有 summary），但会长期堆着。实测一次真实清理后，8 条已归档里有 7 条悬空。
+- 0.1.2 之前删掉的会话会在 `workspace.json` 里留下悬空 id（`archivedSessionIds` / 工作区 `sessionIds`）。**0.1.2 起删除时会一并清掉**；历史遗留的清法是"对已经删掉的会话再发一次删除请求"——文件已经不在，只会走到清登记那一步，幂等。
 - 会话自己的目录会被删，但它所在的项目目录（`--<cwd>--`）会留下一个空壳，和框架自己的行为一致。
 - 级联删除依赖 `sessionPersistence.list()` 的快照里带 `header.parentSession`；该字段是契约里明写的，但只在单测与打桩里验证过级联，没有用真实的"父子都存在的会话"跑过端到端。
 - 活会话拒绝、`api-session/removed` 广播、删除编排现在有 `test/host-plugin.test.mjs` 直接驱动 `index.js` 覆盖（假 ctx + 临时 `$DSH_HOME`）；改这几处时别把那个测试一起改绿。

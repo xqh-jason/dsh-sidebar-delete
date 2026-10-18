@@ -2,6 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.2] - 2026-10-18
+
+### 修复
+
+- **删除会话后不再留下悬空登记**：0.1.1 及以前删掉的会话 id 会留在 workspace 服务的归档集合、置顶集合和工作区成员列表里。用户质疑"为什么不能清理"后复查 `@deepseek-ai/dsh-workspace/lib/index.js` 发现：`unarchiveSession`（注释明写不校验存在性）与 `Workspace.detachSession` 都能安全移除一个已不存在会话的引用，属于此前漏查的官方 API。现在删除成功后会依次调用 `unarchiveSession` / `unpinSession` / 每个工作区的 `detachSession`，并把退休条数回填到响应的 `registrations` 字段。
+- 清理失败只记 warn，不会把一次成功的删除变成失败（有测试覆盖：workspace 服务抛错时仍返回 200）。
+- 新增 3 条测试（66 个用例）：删除后清登记、活会话拒绝时零登记改动、服务坏掉不影响删除结果。
+
+### 遗留数据的清法
+
+历史遗留的悬空 id 不需要手改 `workspace.json`：对已删会话再发一次删除请求即可（文件不在 → 只清登记，幂等）。
+
 ## [0.1.1] - 2026-10-18
 
 独立验证复核后的修正（发现者：`verifier`，逐条见下方"修复"）。

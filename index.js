@@ -150,6 +150,13 @@ async function deleteSession(ctx, requestedId) {
       remove: removeSessionFiles,
     })
     for (const id of result.deleted) ctx.emit('api-session/removed', id)
+    if (result.deleted.length > 0) {
+      // A deleted session's id also lives in the workspace service (archive set,
+      // pin set, and per-workspace accounting). Retire those references here so
+      // this plugin cannot leave dangling ids behind; both removal paths are
+      // documented as tolerating a session that no longer exists.
+      result.registrations = await cleanRegistrations(ctx, result.deleted)
+    }
     if (result.ok) log(ctx, 'info', `sidebar-delete: deleted ${result.deleted.join(', ')}`)
     else log(ctx, 'warn', `sidebar-delete: ${requestedId} not deleted (${result.code})`, result.failures ?? result.live)
     return result
@@ -157,6 +164,64 @@ async function deleteSession(ctx, requestedId) {
     log(ctx, 'error', `sidebar-delete: deleting ${requestedId} failed`, error)
     return { ok: false, code: 'internal', message: String(error?.message ?? error), deleted: [], failures: [] }
   }
+}
+
+/**
+ * Retire a deleted session's references from the workspace service.
+ *
+ * The registry keeps `archivedSessionIds`, `pinnedSessionIds`, and one
+ * `sessionIds` accounting list per workspace, all keyed by session id. Deleting
+ * the log would otherwise leave those pointing at nothing. `unarchiveSession`,
+ * `unpinSession`, and `Workspace.detachSession` are the sanctioned removals and
+ * none of them validates that the session still exists — removing a reference
+ * cannot introduce an unknown one, which is exactly why they can retire an id
+ * whose session is gone.
+ *
+ * @param ctx - host context.
+ * @param ids - the sessions this request deleted.
+ * @returns how many references were retired, or undefined when the service is absent.
+ */
+async function cleanRegistrations(ctx, ids) {
+  const registry = ctx.get('workspaceRegistry')
+  if (registry === undefined || typeof registry.list !== 'function') return undefined
+  let retired = 0
+  for (const id of ids) {
+    if (typeof registry.unarchiveSession === 'function') {
+      try {
+        await registry.unarchiveSession(id)
+        retired += 1
+      } catch (error) {
+        log(ctx, 'warn', `sidebar-delete: could not unarchive ${id}`, error)
+      }
+    }
+    if (typeof registry.unpinSession === 'function') {
+      try {
+        await registry.unpinSession(id)
+      } catch (error) {
+        log(ctx, 'warn', `sidebar-delete: could not unpin ${id}`, error)
+      }
+    }
+  }
+  let workspaces = []
+  try {
+    workspaces = registry.list() ?? []
+  } catch (error) {
+    log(ctx, 'warn', 'sidebar-delete: could not list workspaces for cleanup', error)
+    return retired
+  }
+  for (const workspace of workspaces) {
+    const listed = Array.isArray(workspace?.sessionIds) ? workspace.sessionIds : []
+    for (const id of ids) {
+      if (!listed.includes(id) || typeof workspace.detachSession !== 'function') continue
+      try {
+        await workspace.detachSession(id)
+        retired += 1
+      } catch (error) {
+        log(ctx, 'warn', `sidebar-delete: could not detach ${id} from a workspace`, error)
+      }
+    }
+  }
+  return retired
 }
 
 /**

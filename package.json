@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidebar-delete",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Delete sessions (logs included) and manage/delete workspaces from the DeepSeek Harness sidebar. · 在 dsh 侧栏删除会话（含本地日志）并管理工作区。",
   "type": "module",

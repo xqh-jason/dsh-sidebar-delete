@@ -58,7 +58,7 @@ async function makeHome(ids) {
  * @returns the registered handler, the routes, the emitted events, and the ctx.
  */
 function mount(options = {}) {
-  const { live = [], snapshots = [], connection, configRoot } = options
+  const { live = [], snapshots = [], connection, configRoot, workspaceRegistry } = options
   const routes = []
   const emitted = []
   const ctx = {
@@ -87,6 +87,7 @@ function mount(options = {}) {
         }
       }
       if (name === 'connection') return connection
+      if (name === 'workspaceRegistry') return workspaceRegistry
       if (name === 'configEditor') {
         if (configRoot === undefined) return undefined
         return {
@@ -374,4 +375,80 @@ test('a persistence failure answers an internal error instead of throwing', asyn
   assert.equal(res.status, 409)
   assert.equal(json(res).code, 'internal')
   assert.equal(json(res).deleted.length, 0)
+})
+
+/** @returns a workspace service double recording the cleanup calls it receives. */
+function registryDouble(listedIds) {
+  const calls = { unarchived: [], unpinned: [], detached: [] }
+  const workspace = {
+    path: '/somewhere',
+    sessionIds: [...listedIds],
+    async detachSession(id) {
+      calls.detached.push(id)
+    },
+  }
+  return {
+    calls,
+    registry: {
+      list: () => [workspace],
+      async unarchiveSession(id) {
+        calls.unarchived.push(id)
+      },
+      async unpinSession(id) {
+        calls.unpinned.push(id)
+      },
+    },
+  }
+}
+
+test('a deleted session is retired from the workspace service as well as the disk', async () => {
+  const home = await makeHome([UNRELATED])
+  process.env.DSH_HOME = home.base
+  const { calls, registry } = registryDouble([UNRELATED, PARENT])
+  const { handler } = mount({ snapshots: [{ header: { id: UNRELATED } }], workspaceRegistry: registry })
+
+  const res = response()
+  await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(json(res).deleted, [UNRELATED])
+  assert.deepEqual(calls.unarchived, [UNRELATED], 'the archived id is retired')
+  assert.deepEqual(calls.unpinned, [UNRELATED], 'the pinned id is retired')
+  assert.deepEqual(calls.detached, [UNRELATED], 'only the deleted id leaves a workspace account')
+  assert.equal(json(res).registrations, 2, 'one unarchive plus one detach')
+})
+
+test('a live refusal retires no registration', async () => {
+  const home = await makeHome([UNRELATED])
+  process.env.DSH_HOME = home.base
+  const { calls, registry } = registryDouble([UNRELATED])
+  const { handler } = mount({ live: [UNRELATED], snapshots: [{ header: { id: UNRELATED } }], workspaceRegistry: registry })
+
+  const res = response()
+  await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
+
+  assert.equal(res.status, 409)
+  assert.deepEqual(calls.unarchived, [])
+  assert.deepEqual(calls.detached, [])
+})
+
+test('a broken workspace service never turns a successful delete into a failure', async () => {
+  const home = await makeHome([UNRELATED])
+  process.env.DSH_HOME = home.base
+  const broken = {
+    list: () => {
+      throw new Error('registry unavailable')
+    },
+    unarchiveSession: async () => {
+      throw new Error('write failed')
+    },
+  }
+  const { handler } = mount({ snapshots: [{ header: { id: UNRELATED } }], workspaceRegistry: broken })
+
+  const res = response()
+  await handler(request({ body: JSON.stringify({ sessionId: UNRELATED }) }), res)
+
+  assert.equal(res.status, 200)
+  assert.equal(json(res).ok, true)
+  assert.equal(existsSync(path.join(home.projectDir, UNRELATED)), false)
 })
