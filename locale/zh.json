@@ -35,6 +35,7 @@
   "manager.pending": "处理中…",
   "manager.noCwd": "该会话没有目录记录，无法注册为工作区。",
   "manager.archivedHidden": "已归档的会话不在这里显示；子代理会话会挂在它的父会话下面。",
+  "manager.ghostHidden": "已从磁盘删除、只被宿主进程内存保留的会话不在这里列出；重启 dsh 后宿主会释放它们。",
   "manager.untitled": "未命名会话",
   "manager.subagent": "子代理",
   "manager.running": "运行中",

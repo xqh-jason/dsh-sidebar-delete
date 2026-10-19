@@ -35,6 +35,7 @@
   "manager.pending": "Working…",
   "manager.noCwd": "This session records no directory, so it cannot be registered.",
   "manager.archivedHidden": "Archived sessions are not listed here; subagent sessions appear under their parent.",
+  "manager.ghostHidden": "Sessions already deleted from disk but still held by the running host are not listed here. Restart dsh to release them.",
   "manager.untitled": "Untitled session",
   "manager.subagent": "Subagent",
   "manager.running": "Running",

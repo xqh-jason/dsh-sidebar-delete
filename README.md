@@ -16,6 +16,7 @@ Delete sessions for real from the dsh sidebar — local logs, projection cache, 
 - **管理面板**：侧栏底部（设置旁）常显入口。按工作区列出会话、按目录列出未分组会话，逐条可删；未分组的目录可一键「注册为工作区」。
 - **删除工作区**：沿用官方语义——只注销工作区登记，文件夹与会话全部保留，其会话落到「未分组」。
 - **每行可辨识**：标题取真正持久化的会话标题（无标题显示「未命名会话」，不再回退成目录名），副行是短 id + 本地时间；徽标区分「当前打开 / 运行中 / 子代理 / 空会话」；子代理与 fork 子会话嵌在父会话下面，父行标出「含 N 条子会话」。
+- **定时清理未分组会话**（默认关闭）：配置 `enabled: true` 后，每天（默认 `12:25`）自动删掉不在任何工作区目录下的会话；有开着回合的会跳过，拿不到工作区登记时一个都不删。见[下文](#定时清理未分组会话默认关闭)。
 
 ## 为什么需要它
 
@@ -45,7 +46,36 @@ dsh plugin --profile <profile> add dsh-sidebar-delete
 
 - 会话行悬停 → 垃圾桶图标；或 "…" 菜单 → 「删除会话」。确认框写明标题、不可恢复、以及会连带删掉几条子会话。
 - 侧栏底部「管理工作区与会话」→ 每个工作区一行（标题 / 路径 / 会话数），下面是它的会话；末尾「未分组」按目录列会话。每行右侧可删；未分组目录旁可「注册为工作区」。
+- 面板只列**磁盘上仍有日志**的会话：删完就消失，不会被宿主内存里残留的会话拖回来。若有这类幽灵被过滤掉，面板底部会提示「重启 dsh 后宿主会释放它们」。探测失败时面板显示全部（失败不藏行）。
 - 「当前打开的会话」不显示删除入口；运行中的会话仍显示，但 Host 会拒绝并说明原因。
+
+## 定时清理未分组会话（默认关闭）
+
+每天自动把「未分组」的会话清掉。**默认关闭**，只有插件配置里写 `enabled: true` 才生效。
+
+配置就是插件自己的 config 对象（宿主把它作为 `apply` 的第二个参数交给插件）：
+
+```json
+{
+  "enabled": true,
+  "time": "12:25",
+  "workspaceScope": "tree"
+}
+```
+
+- `enabled`：只有严格的 `true` 才生效；不写或者写 `1`、`"yes"` 一律是关闭。
+- `time`：本机时区的 `HH:MM`，默认 `12:25`。写成非法值（`24:00`、`12:60`、`abc`）时整条配置判为无效并**保持关闭**，不会退回默认时间偷偷跑。
+- `workspaceScope`：`tree`（默认）把「`cwd` 在工作区路径之下（含等于）」的会话都算已分组；`exact` 只认路径本身。
+
+语义：
+
+- 载体是插件内的 node 定时器，**dsh 运行期间生效**。dsh 没开时不会跑；下次启动后若发现今天该跑的时刻已过、而当天没跑过，会补跑一次，然后恢复每天一次。
+- 按**目录**判定未分组：会话记录里的 `cwd` 落在任何已登记工作区路径之下（或等于）就保留，它的子会话（fork / 子代理）跟着保留；其余（家目录、`/tmp`、临时探针目录）全部删除。
+- 置顶、归档**不豁免**；唯一豁免是**有开着回合**的会话（删它下面的东西会坏状态），这类会被跳过并记进本轮汇总。默认删除的范围里若混进了要保留的会话（未分组父会话 + 工作区目录下的子会话这种组合），整条分支都会留着，不会连带删掉工作区里的那条。
+- 删除走的是和手动删除同一条路径（会话日志目录 + 投影缓存 + 工作区登记退休 + `api-session/removed`），所以同样**不可恢复**。
+- 安全红线：拿不到工作区登记（服务缺失、或登记列不出来）时**一个文件都不删**——没有登记就分不出谁算未分组，宁可不动。会话列表拿不到（`no-persistence` / `list-failed`）同样不删。
+- 状态文件在 `<DSH_HOME>/sidebar-delete/auto-purge.json`，只记上次跑的是哪一天（临时文件 + rename 原子写）；文件缺失、损坏、字段不对一律当「没跑过」，绝不影响启动。
+- 关闭状态下不读状态文件、不建定时器。
 
 ## 它删了什么
 
@@ -60,7 +90,7 @@ dsh plugin --profile <profile> add dsh-sidebar-delete
 
 ## 安全边界（含已知弱点）
 
-Host 半只发布一条路由 `POST /dsh-sidebar-delete/session`，准入顺序：
+Host 半发布两条路由：删除用 `POST /dsh-sidebar-delete/session`，面板核对「日志还在不在」用只读的 `POST /dsh-sidebar-delete/sessions`（最多 512 个 id、只读、不删文件、不广播）。两条路由共用同一套准入顺序：
 
 1. 仅 `POST` + `application/json`，body 上限 64 KiB（先判这些，再谈信任）。
 2. 若宿主提供 `connection.requestRejection` **且**该部署接受非 loopback authority（`allowsRemoteAuthorities === true`），由宿主自己的门禁裁决（含 Host/Origin 校验与浏览器登录校验）。
@@ -79,9 +109,11 @@ Host 半只发布一条路由 `POST /dsh-sidebar-delete/session`，准入顺序�
 ## 已知限制
 
 - 归档集合在**启动时不会**自动剪掉会话已不存在的 id（工作区成员会）。插件在删除时会清掉两者；若会话是在别的进程或外部被删的，登记仍在——对那个 id 再发一次删除请求即可（幂等，只清登记）。
+- 侧栏里**有标题**的幽灵会话在页面重载后仍可能回到侧栏：宿主的 `session/list` 会并入它内存里尚未释放的 live 会话，而框架没有公开的释放 API。管理面板已用磁盘探测过滤掉这类行；重启 dsh 后宿主释放会话，侧栏才会干净。
 - 会话目录删除后，它所在的项目目录（`--<cwd>--`）会留下空壳，与框架自身行为一致。
 - 级联删除依赖 `sessionPersistence.list()` 快照里的 `header.parentSession`：已在单测与打桩里覆盖，但没有用真实父子会话跑过端到端。
 - 没有批量删除，一次一条；也没给模型任何 tool。
+- 定时清理只在宿主跑着的时候生效（dsh 关着不会跑），补跑只补当天漏掉的那一次、不会补历史每一天；它也没有在真实 dsh 进程里跑过端到端——测试用的是打桩宿主 + 临时 `DSH_HOME`，真实文件系统操作则在临时目录里真删真验。
 
 ## 卸载
 
@@ -91,7 +123,7 @@ Host 半只发布一条路由 `POST /dsh-sidebar-delete/session`，准入顺序�
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.22.0/bin:$PATH"   # Node ≥ 22.19
-npm run verify          # node --check ×5 + node --test（67 个用例）+ npm pack --dry-run
+npm run verify          # node --check ×5 + node --test（154 个用例）+ npm pack --dry-run
 ```
 
 目录：`index.js`（Host 半）、`client.js`（浏览器半，Module Loader 包，无构建）、`src/`（纯逻辑，可单测）、`test/`、`locale/`、`icon.svg`。
@@ -110,6 +142,10 @@ MIT © 2026 xqh-jason
 
 Deleting a session removes its log directory, its projection-cache record, and its references in the workspace service (archive set, pin set, per-workspace accounting), then mirrors `api-session/removed` so the row disappears without a reload. Child sessions (forks and subagents) cascade; live, currently-open, or parent-of-a-live requests are refused with zero changes. Attachments and other plugins' storage are never touched. Two session-id shapes are accepted (`session-<uuid>` and bare uuid).
 
-The Host half publishes exactly one route: `POST` only, JSON only, 64 KiB cap, then the host's own `connection.requestRejection` where the deployment accepts remote authorities, otherwise this plugin's loopback + same-origin fence. On a loopback-only Desktop deployment that route does **not** check the harness login (the gate's authentication half is unmeasured for that carrier), so treat it as a local tool, not a hardened multi-user service. No model-facing tool is registered on purpose: this is a user-only, irreversible action.
+The Host half publishes two routes: `POST /dsh-sidebar-delete/session` for deletion and the read-only `POST /dsh-sidebar-delete/sessions` (at most 512 ids, no writes, no events) that the manager asks which sessions still have a log directory, so a session the running host keeps in memory after deletion is filtered out of the manager panel. A failed probe lists every row instead of hiding rows. Both routes take that admission order: `POST` + JSON + 64 KiB cap, then the host's own `connection.requestRejection` where the deployment accepts remote authorities, otherwise this plugin's loopback + same-origin fence. On a loopback-only Desktop deployment that route does **not** check the harness login (the gate's authentication half is unmeasured for that carrier), so treat it as a local tool, not a hardened multi-user service. No model-facing tool is registered on purpose: this is a user-only, irreversible action.
+
+Known limitation: a titled ghost can still return to the **sidebar** after a page reload, because the harness merges its live in-memory sessions into `session/list` and publishes no release API; the manager panel filters those rows, and a dsh restart clears them for real.
+
+Optionally, the Host half can delete every ungrouped session once a day: set the plugin's own config to `{"enabled": true, "time": "12:25", "workspaceScope": "tree"}`. It is off unless `enabled` is exactly `true`; `time` is a local `HH:MM` and an invalid value keeps the feature off; a session is ungrouped when its recorded `cwd` is not inside any registered workspace path (its children are kept with it). A run missed while dsh was closed is caught up once after the next start, sessions with an open turn are skipped, and a missing workspace registry aborts the whole round without deleting a single file. State lives in `<DSH_HOME>/sidebar-delete/auto-purge.json`.
 
 Zero runtime dependencies. Install with the plugin manager or `dsh plugin --profile <profile> add dsh-sidebar-delete`, then restart dsh — the Host half only loads at boot. Developed and verified against dsh `0.2.1-rc.2`.

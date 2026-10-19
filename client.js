@@ -28,11 +28,20 @@ window.__ModuleLoader__.load({
     const NS = 'dsh-sidebar-delete'
 
     /**
-     * Relative path of the Host route, resolved against `document.baseURI`:
-     * dsh web serves the app from the origin root, so the leading slash is
-     * omitted to survive a deployment that mounts the app under a prefix.
+     * Relative path of the Host's delete route, resolved against
+     * `document.baseURI`: dsh web serves the app from the origin root, so the
+     * leading slash is omitted to survive a deployment that mounts the app
+     * under a prefix.
      */
     const ROUTE_PATH = 'dsh-sidebar-delete/session'
+
+    /**
+     * Relative path of the Host's read-only durability route: it answers which
+     * session ids still have a log directory on disk, so the manager panel can
+     * filter out sessions the running host keeps in memory after their files
+     * were deleted.
+     */
+    const ROUTE_SESSIONS = 'dsh-sidebar-delete/sessions'
 
     /** `<style>` element id, so a double mount never stacks two sheets. */
     const STYLE_ID = 'dshsd-styles'
@@ -71,6 +80,7 @@ window.__ModuleLoader__.load({
       'manager.pending': 'Working…',
       'manager.noCwd': 'This session records no directory, so it cannot be registered.',
       'manager.archivedHidden': 'Archived sessions are not listed here; subagent sessions appear under their parent.',
+      'manager.ghostHidden': 'Sessions already deleted from disk but still held by the running host are not listed here. Restart dsh to release them.',
       'manager.untitled': 'Untitled session',
       'manager.subagent': 'Subagent',
       'manager.running': 'Running',
@@ -115,6 +125,7 @@ window.__ModuleLoader__.load({
       'manager.pending': '处理中…',
       'manager.noCwd': '该会话没有目录记录，无法注册为工作区。',
       'manager.archivedHidden': '已归档的会话不在这里显示；子代理会话会挂在它的父会话下面。',
+      'manager.ghostHidden': '已从磁盘删除、只被宿主进程内存保留的会话不在这里列出；重启 dsh 后宿主会释放它们。',
       'manager.untitled': '未命名会话',
       'manager.subagent': '子代理',
       'manager.running': '运行中',
@@ -526,6 +537,68 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Ask the Host half which of these Sessions still have a log directory on
+     * disk.
+     *
+     * This is a read-only probe, and every failure is "unknown": the caller
+     * must list all rows when it gets null, because hiding rows on a failed
+     * probe would make sessions disappear from the panel for no reason.
+     *
+     * @param sessionIds - the ids to probe, in display order.
+     * @returns `{probed, durable}` Sets, or null when the answer is unknown
+     *   (no fetch, fetch rejection, non-200, bad JSON, or a wrong shape).
+     */
+    async function requestSessionDurability(sessionIds) {
+      try {
+        if (typeof document === 'undefined' || typeof fetch !== 'function') return null
+        let url
+        try {
+          url = new URL(ROUTE_SESSIONS, document.baseURI)
+        } catch {
+          return null
+        }
+        let response
+        try {
+          response = await fetch(url.href, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds }),
+            credentials: 'same-origin',
+          })
+        } catch {
+          return null
+        }
+        if (response.status !== 200) return null
+        let payload
+        try {
+          payload = await response.json()
+        } catch {
+          return null
+        }
+        if (payload === null || typeof payload !== 'object' || payload.ok !== true) return null
+        if (!Array.isArray(payload.durable) || !payload.durable.every((id) => typeof id === 'string')) return null
+        return { probed: new Set(sessionIds), durable: new Set(payload.durable) }
+      } catch {
+        // A probe must never reject and never hide rows by accident.
+        return null
+      }
+    }
+
+    /**
+     * Stable signature of the ids the panel should probe: the sorted `byId`
+     * keys. A snapshot that hands out a fresh object but the same rows must not
+     * re-trigger the probe.
+     *
+     * @param sessions - the Session list snapshot.
+     * @returns the newline-joined sorted ids, or `''` when there is none.
+     */
+    function sessionIdSignature(sessions) {
+      const byId = sessions !== null && sessions !== undefined ? sessions.byId : undefined
+      if (byId === null || byId === undefined || typeof byId !== 'object') return ''
+      return Object.keys(byId).sort().join('\n')
+    }
+
+    /**
      * Word one failure through the locale seat. The `live`, `held`,
      * `serviceUnavailable` and `hostUnavailable` kinds each have their own
      * sentence; every other kind goes through the caller's "…failed: {message}"
@@ -790,15 +863,15 @@ window.__ModuleLoader__.load({
      *
      * @param scopeIds - the ids of this scope, in display order.
      * @param byId - the Session index.
-     * @param archived - ids hidden everywhere.
+     * @param hidden - ids hidden everywhere (archived or ghost).
      * @returns the roots, each `{row, depth, children, size}`.
      */
-    function buildForest(scopeIds, byId, archived) {
+    function buildForest(scopeIds, byId, hidden) {
       const listed = []
       const listedIds = new Set()
       for (const id of scopeIds) {
         const row = byId[id]
-        if (row === null || row === undefined || typeof row.id !== 'string' || listedIds.has(row.id) || archived.has(row.id)) continue
+        if (row === null || row === undefined || typeof row.id !== 'string' || listedIds.has(row.id) || hidden.has(row.id)) continue
         listedIds.add(row.id)
         listed.push(row)
       }
@@ -874,23 +947,23 @@ window.__ModuleLoader__.load({
     /**
      * Collect one Workspace's scope: the rows it lists plus every descendant
      * of those rows, transitively — crossing `origin`, and skipping rows
-     * another section already claimed or that are archived. Claiming
-     * descendants here is what keeps a Workspace's subagent/fork children in
-     * its own section instead of dropping them into "Ungrouped".
+     * another section already claimed or that are hidden (archived or ghost).
+     * Claiming descendants here is what keeps a Workspace's subagent/fork
+     * children in its own section instead of dropping them into "Ungrouped".
      *
      * @param members - the Workspace's own member ids, in its order.
      * @param byId - the Session index.
      * @param order - every row id in display order.
      * @param childrenOf - the {@link childrenIndex} of `order`.
-     * @param archived - ids hidden everywhere.
+     * @param hidden - ids hidden everywhere (archived or ghost).
      * @param claimed - ids already owned by an earlier section; extended here.
      * @returns the scope's ids: members first, then discovered descendants.
      */
-    function workspaceScope(members, byId, order, childrenOf, archived, claimed) {
+    function workspaceScope(members, byId, order, childrenOf, hidden, claimed) {
       const scope = new Set()
       const queue = []
       const admit = (id) => {
-        if (scope.has(id) || claimed.has(id) || archived.has(id) || byId[id] === undefined) return false
+        if (scope.has(id) || claimed.has(id) || hidden.has(id) || byId[id] === undefined) return false
         scope.add(id)
         queue.push(id)
         return true
@@ -916,11 +989,38 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Whether a row is a ghost: the durability probe covered it, its log
+     * directory is gone, and the main view does not hold it open. A row the
+     * probe did not cover and a row whose log is still on disk are never
+     * ghosts; an archived row keeps its own rule (hidden, but not counted as a
+     * ghost).
+     *
+     * @param id - the row id.
+     * @param row - the `byId` entry.
+     * @param known - the probe result (`{probed, durable}` Sets), or null when
+     *   the answer is unknown.
+     * @param archived - the archived id set.
+     * @returns whether the row must not be listed.
+     */
+    function isGhostRow(id, row, known, archived) {
+      if (row === null || row === undefined) return false
+      if (known === null || known === undefined) return false
+      if (archived.has(id)) return false
+      const { probed, durable } = known
+      if (!(probed instanceof Set) || !(durable instanceof Set)) return false
+      return probed.has(id) && !durable.has(id) && !isSessionRetained(row)
+    }
+
+    /**
      * Project the two snapshots into what the panel lists: the registered
      * Workspaces with their Sessions, and the ungrouped Sessions grouped by
      * recorded directory. Every Session row of `byId` is placed exactly once,
-     * subagent rows included; only archived rows are hidden
-     * (`manager.archivedHidden` says so on screen).
+     * subagent rows included; archived rows and ghost rows are hidden
+     * (`manager.archivedHidden` / `manager.ghostHidden` say so on screen).
+     *
+     * A ghost is a row the Host still serves from memory although its log files
+     * are gone; hiding it here is what keeps the management panel honest after
+     * this plugin deletes a session. A failed probe hides nothing.
      *
      * Sections claim in order: each Workspace takes its members and their
      * descendants, and whatever is left — including a subagent whose parent
@@ -928,25 +1028,37 @@ window.__ModuleLoader__.load({
      *
      * @param workspaces - the Workspace snapshot.
      * @param sessions - the Session snapshot.
-     * @returns `{workspaces: [{item, nodes}], groups: [{path, nodes}]}`.
+     * @param known - the durability probe result (`{probed, durable}` Sets), or
+     *   null/undefined when unknown (nothing is hidden then).
+     * @returns `{workspaces: [{item, nodes}], groups: [{path, nodes}], hiddenGhosts}`
+     *   where `hiddenGhosts` counts the rows the ghost rule removed.
      */
-    function buildManagerModel(workspaces, sessions) {
+    function buildManagerModel(workspaces, sessions, known) {
       const items = workspaces !== null && workspaces !== undefined && Array.isArray(workspaces.items) ? workspaces.items : []
       const archivedIds = workspaces !== null && workspaces !== undefined && Array.isArray(workspaces.archivedSessionIds) ? workspaces.archivedSessionIds : []
       const archived = new Set(archivedIds)
       const byId = sessions !== null && sessions !== undefined && sessions.byId !== null && sessions.byId !== undefined ? sessions.byId : {}
       const ids = sessions !== null && sessions !== undefined && Array.isArray(sessions.ids) ? sessions.ids : Object.keys(byId)
       const order = rowOrder(byId, ids)
+      // Archived and ghost rows are hidden exactly the same way; only the count
+      // reported to the panel differs.
+      const hidden = new Set(archived)
+      let hiddenGhosts = 0
+      for (const id of order) {
+        if (!isGhostRow(id, byId[id], known, archived)) continue
+        hidden.add(id)
+        hiddenGhosts += 1
+      }
       const childrenOf = childrenIndex(order, byId)
       const claimed = new Set()
       const workspaceEntries = items.map((item) => {
         const members = Array.isArray(item.sessionIds) ? item.sessionIds : []
-        const scoped = workspaceScope(members, byId, order, childrenOf, archived, claimed)
-        return { item, nodes: flattenForest(buildForest(scoped, byId, archived)) }
+        const scoped = workspaceScope(members, byId, order, childrenOf, hidden, claimed)
+        return { item, nodes: flattenForest(buildForest(scoped, byId, hidden)) }
       })
       const groups = []
       const byPath = new Map()
-      for (const tree of buildForest(order.filter((id) => !claimed.has(id)), byId, archived)) {
+      for (const tree of buildForest(order.filter((id) => !claimed.has(id)), byId, hidden)) {
         const path = typeof tree.row.cwd === 'string' && tree.row.cwd !== '' ? tree.row.cwd : null
         const key = path === null ? '\u0000none' : path
         let group = byPath.get(key)
@@ -963,7 +1075,7 @@ window.__ModuleLoader__.load({
         if (right.path === null) return -1
         return left.path.localeCompare(right.path)
       })
-      return { workspaces: workspaceEntries, groups }
+      return { workspaces: workspaceEntries, groups, hiddenGhosts }
     }
 
     /**
@@ -1180,8 +1292,29 @@ window.__ModuleLoader__.load({
       const [registering, setRegistering] = React.useState(null)
       const [registerFailure, setRegisterFailure] = React.useState(null)
       const [confirm, setConfirm] = React.useState(null)
+      // `null` means "unknown": the panel then lists every row. Only a positive
+      // answer may hide a row, so a failing probe can never empty the panel.
+      const [known, setKnown] = React.useState(null)
       const cardRef = useDialogFocus()
-      const model = buildManagerModel(workspaces, sessions)
+      const idSignature = sessionIdSignature(sessions)
+
+      React.useEffect(() => {
+        const ids = idSignature === '' ? [] : idSignature.split('\n')
+        if (ids.length === 0) {
+          setKnown(null)
+          return undefined
+        }
+        // A stale probe must not overwrite a newer one.
+        let cancelled = false
+        requestSessionDurability(ids).then((result) => {
+          if (!cancelled) setKnown(result)
+        })
+        return () => {
+          cancelled = true
+        }
+      }, [idSignature])
+
+      const model = buildManagerModel(workspaces, sessions, known)
 
       const close = () => {
         if (confirm !== null && confirm.pending === true) return
@@ -1319,6 +1452,7 @@ window.__ModuleLoader__.load({
                   )
                 }),
                 h('p', { className: 'dshsd-note' }, t('manager.archivedHidden')),
+                model.hiddenGhosts > 0 ? h('p', { className: 'dshsd-note' }, t('manager.ghostHidden')) : null,
               ),
             ),
           ),
@@ -1516,6 +1650,10 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       apply,
+      // The Module Loader ignores members it does not know; this seat exists so
+      // node tests can exercise the pure model projection and the read-only
+      // durability probe without a DOM.
+      __test: { buildManagerModel, requestSessionDurability },
     }
   },
 })

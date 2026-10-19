@@ -168,9 +168,26 @@ test('the browser half imports no Harness Client package and writes no page DOM'
 
 test('the host half exports the documented plugin shape', async () => {
   const host = await read('index.js')
-  assert.match(host, /export function apply\(ctx\)/)
+  // The optional second parameter is the plugin's config object; what this
+  // assertion guards is the export *form* — an `apply()` function, never a
+  // default export.
+  assert.match(host, /export function apply\(ctx(?:, config = \{\})?\)/)
   assert.match(host, /export const inject = \['webServer'\]/)
   assert.match(host, /\/dsh-sidebar-delete\/session/)
   assert.ok(!host.includes('export default'), 'host half must use the apply() export form')
   assert.ok(host.includes('api-session/removed'), 'host half must mirror the removal event')
+})
+
+test('both halves carry the read-only durability route and the ghost note', async () => {
+  const host = await read('index.js')
+  assert.match(host, /export const ROUTE_SESSIONS = '\/dsh-sidebar-delete\/sessions'/)
+  assert.match(host, /findSessionDir\(root, id\)/, 'the host half must decide durability from the log directory')
+  assert.match(clientSource, /const ROUTE_SESSIONS = 'dsh-sidebar-delete\/sessions'/)
+  assert.match(clientCode, /requestSessionDurability\(/)
+  assert.match(clientCode, /model\.hiddenGhosts > 0/)
+  assert.match(clientCode, /t\('manager\.ghostHidden'\)/)
+  // The loader ignores unknown members; the seat must keep exposing the model
+  // projection (and may expose more test-only helpers).
+  assert.match(clientSource, /__test: \{/)
+  assert.match(clientSource, /buildManagerModel/)
 })

@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { apply, MAX_BODY_BYTES, ROUTE_PATH } from '../index.js'
+import { apply, MAX_BODY_BYTES, ROUTE_PATH, ROUTE_SESSIONS } from '../index.js'
 
 const PERSISTENCE_PACKAGE = '@deepseek-ai/dsh-session-persistence-jsonl'
 const PARENT = 'session-aaaaaaaa-1111-4111-8111-111111111111'
@@ -126,7 +126,13 @@ function mount(options = {}) {
     },
   }
   apply(ctx)
-  return { ctx, routes, emitted, handler: routes[0]?.handler }
+  return {
+    ctx,
+    routes,
+    emitted,
+    handler: routes[0]?.handler,
+    sessionsHandler: routes.find((route) => route.path === ROUTE_SESSIONS)?.handler,
+  }
 }
 
 /** @returns a request-shaped object with an async-iterable body. */
@@ -162,12 +168,17 @@ function json(res) {
   return JSON.parse(res.body)
 }
 
-test('apply registers one exact route at the documented path', () => {
+test('apply registers both exact routes at their documented paths', () => {
   const { routes } = mount()
-  assert.equal(routes.length, 1)
-  assert.equal(routes[0].kind, 'exact')
-  assert.equal(routes[0].path, ROUTE_PATH)
+  assert.deepEqual(
+    routes.map((route) => [route.kind, route.path]),
+    [
+      ['exact', ROUTE_PATH],
+      ['exact', ROUTE_SESSIONS],
+    ],
+  )
   assert.equal(ROUTE_PATH, '/dsh-sidebar-delete/session')
+  assert.equal(ROUTE_SESSIONS, '/dsh-sidebar-delete/sessions')
   assert.equal(MAX_BODY_BYTES, 64 * 1024)
 })
 
@@ -523,4 +534,127 @@ test('an agent-held session whose activity cannot be read is refused with its ow
   assert.deepEqual(json(res).running, [])
   assert.equal(existsSync(path.join(home.projectDir, UNRELATED)), true)
   assert.deepEqual(emitted, [])
+})
+
+test('the durability route splits ids by whether their log directory exists', async () => {
+  const home = await makeHome([PARENT])
+  process.env.DSH_HOME = home.base
+  const { sessionsHandler, emitted } = mount()
+
+  const res = response()
+  await sessionsHandler(request({ body: JSON.stringify({ sessionIds: [PARENT, UNRELATED, BARE_CHILD] }) }), res)
+
+  assert.equal(res.status, 200)
+  const body = json(res)
+  assert.equal(body.ok, true)
+  assert.deepEqual(body.durable, [PARENT])
+  assert.deepEqual(body.missing, [UNRELATED, BARE_CHILD])
+  assert.equal(existsSync(path.join(home.projectDir, PARENT)), true, 'a probe must not delete the log directory')
+  assert.equal(existsSync(path.join(home.projcache, `${PARENT}.json`)), true, 'a probe must not delete the cache record')
+  assert.deepEqual(emitted, [], 'a probe emits nothing')
+})
+
+test('the durability route accepts an empty list and answers two empty arrays', async () => {
+  const home = await makeHome([])
+  process.env.DSH_HOME = home.base
+  const { sessionsHandler } = mount()
+
+  const res = response()
+  await sessionsHandler(request({ body: JSON.stringify({ sessionIds: [] }) }), res)
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(json(res), { ok: true, durable: [], missing: [] })
+})
+
+test('the durability route refuses malformed id lists without a durable field', async () => {
+  const home = await makeHome([UNRELATED])
+  process.env.DSH_HOME = home.base
+  const { sessionsHandler, emitted } = mount()
+
+  const bodies = [
+    {},
+    { sessionIds: 'x' },
+    { sessionIds: ['../etc/passwd'] },
+    { sessionIds: ['a/b'] },
+    { sessionIds: [''] },
+    { sessionIds: [42] },
+    { sessionIds: [UNRELATED, null] },
+    { sessionIds: Array.from({ length: 513 }, () => UNRELATED) },
+  ]
+  for (const body of bodies) {
+    const res = response()
+    await sessionsHandler(request({ body: JSON.stringify(body) }), res)
+    assert.equal(res.status, 400, `must refuse ${JSON.stringify(body).slice(0, 60)}`)
+    assert.equal(json(res).code, 'bad-request')
+    assert.equal('durable' in json(res), false, 'a refused request must not answer a durable list')
+  }
+  assert.equal(existsSync(path.join(home.projectDir, UNRELATED)), true)
+  assert.deepEqual(emitted, [])
+})
+
+test('the durability route enforces method, media type, and body size', async () => {
+  const home = await makeHome([])
+  process.env.DSH_HOME = home.base
+  const { sessionsHandler } = mount()
+
+  const get = response()
+  await sessionsHandler(request({ method: 'GET' }), get)
+  assert.equal(get.status, 405)
+
+  const noType = response()
+  await sessionsHandler(request({ body: '{}', headers: { 'content-type': 'text/plain' } }), noType)
+  assert.equal(noType.status, 415)
+
+  const huge = response()
+  await sessionsHandler(request({ body: JSON.stringify({ sessionIds: [UNRELATED], pad: 'x'.repeat(70 * 1024) }) }), huge)
+  assert.equal(huge.status, 413)
+})
+
+test('the durability route reuses the same admission fence', async () => {
+  const home = await makeHome([])
+  process.env.DSH_HOME = home.base
+  const { sessionsHandler } = mount()
+
+  const foreign = response()
+  await sessionsHandler(
+    request({ body: JSON.stringify({ sessionIds: [UNRELATED] }), headers: { host: 'evil.com:58090' } }),
+    foreign,
+  )
+  assert.equal(foreign.status, 403)
+  assert.equal(json(foreign).code, 'untrusted-origin')
+
+  const crossSite = response()
+  await sessionsHandler(
+    request({ body: JSON.stringify({ sessionIds: [UNRELATED] }), headers: { origin: 'http://evil.com' } }),
+    crossSite,
+  )
+  assert.equal(crossSite.status, 403)
+})
+
+test('an unreadable session root answers an internal error instead of "all missing"', async () => {
+  const home = await makeHome([])
+  const sessionsPath = path.join(home.base, 'sessions')
+  await writeFile(sessionsPath, 'not a directory')
+  process.env.DSH_HOME = home.base
+  const { sessionsHandler } = mount()
+
+  const res = response()
+  await sessionsHandler(request({ body: JSON.stringify({ sessionIds: [UNRELATED] }) }), res)
+
+  assert.equal(res.status, 500)
+  assert.equal(json(res).code, 'internal')
+  assert.equal('durable' in json(res), false)
+})
+
+test('the durability route honours the configured persistence root', async () => {
+  const decoy = await makeHome([])
+  const home = await makeHome([UNRELATED])
+  process.env.DSH_HOME = decoy.base
+  const { sessionsHandler } = mount({ configRoot: path.join(home.base, 'sessions') })
+
+  const res = response()
+  await sessionsHandler(request({ body: JSON.stringify({ sessionIds: [UNRELATED] }) }), res)
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(json(res).durable, [UNRELATED])
 })
