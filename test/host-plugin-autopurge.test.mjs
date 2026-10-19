@@ -884,7 +884,14 @@ test('a broken state read is a warning, not a crash', async () => {
 test('a failing state write surfaces to the caller as an error the mount only warns about', async () => {
   const home = await makeBase()
   const statePath = path.join(home, 'sidebar-delete', 'auto-purge.json')
-  await assert.rejects(writePurgeState('/proc/definitely/not/writable/auto-purge.json', { version: 1 }, {}))
+  // A regular file where the state directory would have to be: `mkdir` fails
+  // with ENOTDIR/EEXIST on every platform. This replaced `/proc/...`, whose
+  // write behaviour is platform-specific — on the ubuntu CI runner the `/proc`
+  // write hung until the test timeout (2026-10-19), while macOS passed.
+  const blocked = path.join(home, 'blocked-by-a-file')
+  await writeFile(blocked, 'not a directory')
+  const unwritable = path.join(blocked, 'auto-purge.json')
+  await assert.rejects(writePurgeState(unwritable, { version: 1 }, {}))
 
   const { timers, setTimer, clearTimer } = fakeTimers()
   const { ctx, logs } = makeCtx()
@@ -894,7 +901,7 @@ test('a failing state write surfaces to the caller as an error the mount only wa
     setTimer,
     clearTimer,
     run: async () => ({ ok: true }),
-    writeState: () => writePurgeState('/proc/definitely/not/writable/auto-purge.json', { version: 1 }),
+    writeState: () => writePurgeState(unwritable, { version: 1 }),
     statePath,
   })
   await assert.doesNotReject(handle.ready)
