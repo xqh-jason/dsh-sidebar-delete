@@ -123,7 +123,7 @@ Host 半发布两条路由：删除用 `POST /dsh-sidebar-delete/session`，面�
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.22.0/bin:$PATH"   # Node ≥ 22.19
-npm run verify          # node --check ×5 + node --test（154 个用例）+ npm pack --dry-run
+npm run verify          # node --check ×7 + node --test（154 个用例）+ npm pack --dry-run
 ```
 
 目录：`index.js`（Host 半）、`client.js`（浏览器半，Module Loader 包，无构建）、`src/`（纯逻辑，可单测）、`test/`、`locale/`、`icon.svg`。

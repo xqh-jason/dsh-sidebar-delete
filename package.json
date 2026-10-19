@@ -41,7 +41,7 @@
     }
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check src/session-store.mjs && node --check src/http-fence.mjs && node --check src/delete-session.mjs",
+    "check": "node --check index.js && node --check client.js && node --check src/session-store.mjs && node --check src/http-fence.mjs && node --check src/delete-session.mjs && node --check src/auto-purge.mjs && node --check src/purge-state.mjs",
     "test": "node --test test/*.test.mjs",
     "pack:check": "npm pack --dry-run",
     "verify": "npm run check && npm test && npm run pack:check",

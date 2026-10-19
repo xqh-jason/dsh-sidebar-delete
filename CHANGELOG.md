@@ -20,6 +20,10 @@
 - `apply` 导出形态为 `apply(ctx, config = {})`：宿主传入的插件配置从第二个实参读取，仍是 `apply` 函数导出、不引入 default export；`test/manifest.test.mjs` 断言这一导出形式。
 - 测试 134 个（原 71 + 新增 63），全部真跑临时 `$DSH_HOME` 下的文件。做了变异验证（9 个变异体，8 个被杀、1 个等价）：去掉「无 registry 就中止」→1 红、去掉「保留会话不被连带删除」→1 红、把目录边界判断换成裸字符串前缀→2 红、把 `enabled` 的严格 true 换成真值判断→1 红、把悬空父 id 不再当作删除根→1 红、把「恰好到点排到明天」改成 `>=`→1 红、让补跑忽略已跑日期→2 红、让失败的轮次也记成当天跑过→1 红、把 `mountAutoPurge` 的配置不再归一化→1 红；把 `mountAutoPurge` 里的 `!== true` 改成 `!` 不红，因为归一化后它已经是严格布尔（等价变异体）。
 
+### 变更
+
+- `npm run check` 的 `node --check` 清单由 5 个文件扩到 7 个，纳入 `src/auto-purge.mjs` 与 `src/purge-state.mjs`；`prepublishOnly` 走的 `verify` 因此也会检查这两个模块（README 同步为「node --check ×7」）。
+
 ## [0.1.6] - 2026-10-18
 
 ### 修复
