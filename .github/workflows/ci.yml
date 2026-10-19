@@ -7,6 +7,8 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # A stuck test file must fail the job instead of burning runner minutes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -14,7 +16,16 @@ jobs:
           node-version: '22.19.0'
       - name: Syntax check
         run: npm run check
+      # One file per process, each with its own clock, so a file that hangs or
+      # leaks a handle names itself in the log instead of stalling the whole
+      # job (2026-10-19: the combined run hung on ubuntu-latest while passing
+      # locally on Node 22.19/22.22 in every environment we could reproduce).
       - name: Unit tests
-        run: npm test
+        run: |
+          for file in test/*.test.mjs; do
+            echo "::group::$file"
+            timeout 90 node --test --test-timeout=30000 --test-force-exit "$file"
+            echo "::endgroup::"
+          done
       - name: Package contents
         run: npm run pack:check
